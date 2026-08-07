@@ -1,4 +1,5 @@
 import errno
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,11 +7,20 @@ from unittest.mock import patch
 
 from core.dataset_parser import (
     FieldMinMaxDataset,
+    IncompletePostProcessingError,
     PatchYPlusDataset,
     ResidualDataset,
     ScalarTimeSeriesDataset,
     VectorTimeSeriesDataset,
+    SUPPORTED_FILENAMES,
+    parse_data_file,
     parse_datasets,
+)
+from core.discovery import (
+    PostProcessingChangedError,
+    capture_post_processing_snapshot,
+    discover_post_processing,
+    validate_post_processing_snapshot,
 )
 from core.generator import AtomicPublicationError, write_monitor
 
@@ -142,6 +152,163 @@ class DatasetPipelineTests(unittest.TestCase):
 
         self.assertEqual(len(datasets), 1)
         self.assertEqual(datasets[0].series["value"], (20.0,))
+
+    def test_valid_one_row_supported_input_is_accepted(self):
+        owner, info = self.output(
+            "outlet",
+            "surfaceFieldValue.dat",
+            "# Time value\n0 20\n",
+        )
+
+        datasets = parse_datasets({owner: info})
+
+        self.assertEqual(len(datasets), 1)
+        self.assertEqual(datasets[0].x_axis, (0.0,))
+
+    def test_empty_and_header_only_supported_files_are_incomplete(self):
+        for contents in ("", "# Time value\n"):
+            with self.subTest(contents=contents):
+                path = self.root / "surfaceFieldValue.dat"
+                path.write_text(contents)
+                with self.assertRaises(IncompletePostProcessingError):
+                    parse_data_file("outlet", path)
+
+    def test_truncated_time_series_rows_are_incomplete(self):
+        samples = (
+            "# Time a b\n0 1 2\n1 3\n",
+            "# Time Ux Uy Uz\n0 1 2 3\n1 4 5\n",
+        )
+        for contents in samples:
+            with self.subTest(contents=contents):
+                path = self.root / "surfaceFieldValue.dat"
+                path.write_text(contents)
+                with self.assertRaises(IncompletePostProcessingError):
+                    parse_data_file("outlet", path)
+
+    def test_truncated_residual_row_is_incomplete(self):
+        path = self.root / "solverInfo.dat"
+        path.write_text(
+            "# Time p_solver p_initial p_final p_iters p_converged\n"
+            "0 GAMG 1e-2 1e-5 3 1\n"
+            "1 GAMG 2e-3\n"
+        )
+
+        with self.assertRaises(IncompletePostProcessingError):
+            parse_data_file("residuals", path)
+
+    def test_incomplete_min_max_row_is_rejected(self):
+        path = self.root / "fieldMinMax.dat"
+        path.write_text(
+            "# Time field min max\n"
+            "0 p 1 4\n"
+            "1 p 2\n"
+        )
+
+        with self.assertRaises(IncompletePostProcessingError):
+            parse_data_file("limits", path)
+
+    def test_incomplete_y_plus_row_is_rejected(self):
+        path = self.root / "patchYPlus.dat"
+        path.write_text(
+            "# Time patch min max average\n"
+            "0 inlet 1 10 5\n"
+            "1 inlet 2 11\n"
+        )
+
+        with self.assertRaises(IncompletePostProcessingError):
+            parse_data_file("walls", path)
+
+    def test_unsupported_file_is_still_ignored(self):
+        path = self.root / "unsupported.dat"
+        path.write_text("")
+
+        self.assertEqual(parse_data_file("other", path), [])
+
+    def test_supported_file_disappearing_before_read_is_incomplete(self):
+        path = self.root / "surfaceFieldValue.dat"
+
+        with self.assertRaises(IncompletePostProcessingError):
+            parse_data_file("outlet", path)
+
+    def _captured_case_input(self):
+        latest = self.root / "postProcessing" / "outlet" / "1"
+        latest.mkdir(parents=True)
+        source = latest / "surfaceFieldValue.dat"
+        source.write_text("# Time value\n0 1\n")
+        outputs = discover_post_processing(self.root)
+        snapshot = capture_post_processing_snapshot(
+            self.root, outputs, SUPPORTED_FILENAMES
+        )
+        return source, snapshot
+
+    def test_snapshot_detects_supported_file_disappearing(self):
+        source, snapshot = self._captured_case_input()
+        source.unlink()
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
+
+    def test_snapshot_detects_supported_file_appearing(self):
+        _source, snapshot = self._captured_case_input()
+        other = self.root / "postProcessing" / "limits" / "1"
+        other.mkdir(parents=True)
+        (other / "fieldMinMax.dat").write_text("# Time field min max\n0 p 1 2\n")
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
+
+    def test_snapshot_ignores_unsupported_file_appearing(self):
+        source, snapshot = self._captured_case_input()
+        (source.parent / "otherOutput.dat").write_text("partial unsupported output")
+
+        validate_post_processing_snapshot(
+            self.root, snapshot, SUPPORTED_FILENAMES
+        )
+
+    def test_snapshot_detects_size_change(self):
+        source, snapshot = self._captured_case_input()
+        source.write_text("# Time value\n0 1000\n")
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
+
+    def test_snapshot_detects_mtime_change(self):
+        source, snapshot = self._captured_case_input()
+        status = source.stat()
+        os.utime(source, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000))
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
+
+    def test_snapshot_detects_file_replacement(self):
+        source, snapshot = self._captured_case_input()
+        replacement = source.with_suffix(".replacement")
+        replacement.write_text(source.read_text())
+        os.replace(replacement, source)
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
+
+    def test_snapshot_detects_newest_timestep_change(self):
+        _source, snapshot = self._captured_case_input()
+        newer = self.root / "postProcessing" / "outlet" / "2"
+        newer.mkdir()
+        (newer / "surfaceFieldValue.dat").write_text("# Time value\n0 2\n")
+
+        with self.assertRaises(PostProcessingChangedError):
+            validate_post_processing_snapshot(
+                self.root, snapshot, SUPPORTED_FILENAMES
+            )
 
     def test_generator_orders_by_type_then_title(self):
         datasets = [

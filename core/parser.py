@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 def verify_case(case_path: Path):
@@ -101,3 +102,69 @@ def parse_function_objects(text):
             candidate = line
 
     return objects
+
+
+def parse_function_object_configurations(text):
+    """Return direct function-object types and enabled states.
+
+    This deliberately leaves ``parse_function_objects`` unchanged.  It provides
+    the additional configuration detail needed to decide whether a supported
+    post-processing file is expected without trying to expand OpenFOAM include
+    directives.
+    """
+    text = re.sub(r"#\{.*?#\};", "", text, flags=re.DOTALL)
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    text = re.sub(r"//.*", "", text)
+    tokens = re.findall(r"[{};]|[^\s{};]+", text)
+
+    try:
+        functions_index = tokens.index("functions")
+        opening_index = tokens.index("{", functions_index + 1)
+    except ValueError:
+        return {}
+
+    configurations = {}
+    depth = 1
+    candidate = None
+    current_name = None
+    current = None
+    index = opening_index + 1
+    while index < len(tokens) and depth:
+        token = tokens[index]
+
+        if depth == 1:
+            if token == "}":
+                depth = 0
+            elif token == "{":
+                depth = 2
+                if candidate and not candidate.startswith("#"):
+                    current_name = candidate
+                    current = {"type": "", "enabled": True}
+                candidate = None
+            elif token == ";":
+                candidate = None
+            else:
+                candidate = token
+        else:
+            if token == "{":
+                depth += 1
+            elif token == "}":
+                depth -= 1
+                if depth == 1 and current_name is not None:
+                    configurations[current_name] = current
+                    current_name = None
+                    current = None
+            elif depth == 2 and current is not None and token in {"type", "enabled"}:
+                if index + 1 < len(tokens):
+                    value = tokens[index + 1]
+                    if token == "type":
+                        current["type"] = value
+                    else:
+                        current["enabled"] = value.lower() not in {
+                            "false", "no", "off", "0"
+                        }
+                    index += 1
+
+        index += 1
+
+    return configurations

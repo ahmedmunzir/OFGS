@@ -13,9 +13,46 @@ from unittest.mock import patch
 import gnuplot_generate
 from core.dataset_parser import ScalarTimeSeriesDataset
 from core.generator import write_monitor
+from core.parser import parse_function_object_configurations
 
 
 class GeneratorEntrypointTests(unittest.TestCase):
+    def _run_in_case(self, case):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        previous_directory = Path.cwd()
+        try:
+            os.chdir(case)
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                status = gnuplot_generate.entrypoint()
+        finally:
+            os.chdir(previous_directory)
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    @staticmethod
+    def _write_control(case, body):
+        system_path = case / "system"
+        system_path.mkdir(exist_ok=True)
+        control = system_path / "controlDict"
+        control.write_text(body)
+        return control
+
+    def test_supported_function_object_configuration_is_parsed(self):
+        configurations = parse_function_object_configurations(
+            "functions\n{\n"
+            "  outlet\n  {\n    type surfaceFieldValue;\n  }\n"
+            "  disabledLimits\n  {\n    type fieldMinMax;\n    enabled false;\n  }\n"
+            "}\n"
+        )
+
+        self.assertEqual(
+            configurations,
+            {
+                "outlet": {"type": "surfaceFieldValue", "enabled": True},
+                "disabledLimits": {"type": "fieldMinMax", "enabled": False},
+            },
+        )
+
     def test_generate_prints_concise_dynamic_summary(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             case = Path(temporary_directory)
@@ -84,6 +121,171 @@ class GeneratorEntrypointTests(unittest.TestCase):
             stderr.getvalue(),
             "OFGS error: atomic publication unavailable.\n",
         )
+
+    def test_expected_header_only_input_fails_and_preserves_previous_output(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(
+                case,
+                "functions\n{\noutlet\n{\ntype surfaceFieldValue;\n}\n}\n",
+            )
+            write_monitor(
+                case,
+                [
+                    ScalarTimeSeriesDataset("old one", (0.0,), {"value": (1.0,)}),
+                    ScalarTimeSeriesDataset("old two", (0.0,), {"value": (2.0,)}),
+                ],
+            )
+            latest = case / "postProcessing" / "outlet" / "1"
+            latest.mkdir(parents=True)
+            (latest / "surfaceFieldValue.dat").write_text("# Time value\n")
+            previous = {
+                case / "monitor.gp": (case / "monitor.gp").read_text(),
+                case / "graphs" / "index.txt": (case / "graphs" / "index.txt").read_text(),
+                case / "graphs" / "01.gp": (case / "graphs" / "01.gp").read_text(),
+                case / "graphs" / "02.gp": (case / "graphs" / "02.gp").read_text(),
+            }
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 1)
+            self.assertIn("post-processing data is incomplete", stderr)
+            self.assertIn("Existing generated graphs have been preserved.", stderr)
+            self.assertNotIn("Traceback", stderr)
+            for path, contents in previous.items():
+                self.assertEqual(path.read_text(), contents)
+
+    def test_expected_supported_file_missing_returns_clean_failure(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(
+                case,
+                "functions\n{\nlimits\n{\ntype fieldMinMax;\n}\n}\n",
+            )
+            (case / "postProcessing" / "limits" / "1").mkdir(parents=True)
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 1)
+            self.assertIn("post-processing data is incomplete", stderr)
+            self.assertIn("Generation was not performed.", stderr)
+            self.assertNotIn("Traceback", stderr)
+            self.assertFalse((case / "monitor.gp").exists())
+
+    def test_expected_empty_supported_file_returns_clean_failure(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(
+                case,
+                "functions\n{\noutlet\n{\ntype surfaceFieldValue;\n}\n}\n",
+            )
+            latest = case / "postProcessing" / "outlet" / "1"
+            latest.mkdir(parents=True)
+            (latest / "surfaceFieldValue.dat").write_text("")
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 1)
+            self.assertIn("post-processing data is incomplete", stderr)
+            self.assertNotIn("Traceback", stderr)
+            self.assertFalse((case / "monitor.gp").exists())
+
+    def test_file_change_during_parsing_preserves_previous_output(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(case, "functions\n{\n}\n")
+            latest = case / "postProcessing" / "outlet" / "1"
+            latest.mkdir(parents=True)
+            source = latest / "surfaceFieldValue.dat"
+            source.write_text("# Time value\n0 1\n")
+            write_monitor(
+                case,
+                [ScalarTimeSeriesDataset("previous", (0.0,), {"value": (1.0,)})],
+            )
+            previous_monitor = (case / "monitor.gp").read_text()
+            previous_index = (case / "graphs" / "index.txt").read_text()
+            real_parse = gnuplot_generate.parse_datasets
+
+            def parse_then_change(outputs):
+                datasets = real_parse(outputs)
+                source.write_text("# Time value\n0 1\n1 2\n")
+                return datasets
+
+            previous_directory = Path.cwd()
+            try:
+                os.chdir(case)
+                stderr = io.StringIO()
+                stdout = io.StringIO()
+                with patch.object(
+                    gnuplot_generate, "parse_datasets", side_effect=parse_then_change
+                ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    status = gnuplot_generate.entrypoint()
+            finally:
+                os.chdir(previous_directory)
+
+            self.assertEqual(status, 1)
+            self.assertIn("changed during generation", stderr.getvalue())
+            self.assertEqual((case / "monitor.gp").read_text(), previous_monitor)
+            self.assertEqual((case / "graphs" / "index.txt").read_text(), previous_index)
+
+    def test_configuration_removal_can_publish_smaller_valid_set(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(
+                case,
+                "functions\n{\noutlet\n{\ntype surfaceFieldValue;\n}\n}\n",
+            )
+            write_monitor(
+                case,
+                [
+                    ScalarTimeSeriesDataset("old one", (0.0,), {"value": (1.0,)}),
+                    ScalarTimeSeriesDataset("old two", (0.0,), {"value": (2.0,)}),
+                ],
+            )
+            latest = case / "postProcessing" / "outlet" / "1"
+            latest.mkdir(parents=True)
+            (latest / "surfaceFieldValue.dat").write_text("# Time value\n0 3\n")
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertEqual(
+                (case / "graphs" / "index.txt").read_text(), "01 outlet\n"
+            )
+            self.assertFalse((case / "graphs" / "02.gp").exists())
+
+    def test_first_expected_generation_with_one_sample_succeeds(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(
+                case,
+                "functions\n{\noutlet\n{\ntype surfaceFieldValue;\n}\n}\n",
+            )
+            latest = case / "postProcessing" / "outlet" / "1"
+            latest.mkdir(parents=True)
+            (latest / "surfaceFieldValue.dat").write_text("# Time value\n0 3\n")
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertTrue((case / "monitor.gp").is_file())
+            self.assertTrue((case / "graphs" / "01.gp").is_file())
+
+    def test_genuine_zero_supported_datasets_does_not_claim_generation(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            self._write_control(case, "functions\n{\n}\n")
+            latest = case / "postProcessing" / "unsupported" / "1"
+            latest.mkdir(parents=True)
+            (latest / "otherOutput.dat").write_text("incomplete but unsupported")
+
+            status, stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 0, stderr)
+            self.assertIn("Found 0 supported graphs.", stdout)
+            self.assertIn("No supported OFGS datasets found. Nothing was generated.", stdout)
+            self.assertNotIn("Generation complete.", stdout)
+            self.assertFalse((case / "monitor.gp").exists())
 
     def test_concurrent_same_case_generation_waits_without_removing_graphs(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

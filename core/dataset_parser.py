@@ -14,6 +14,10 @@ from typing import Dict, List, Mapping, Sequence, Tuple
 Number = float
 
 
+class IncompletePostProcessingError(RuntimeError):
+    """Raised when a supported OpenFOAM output is not structurally complete."""
+
+
 @dataclass(frozen=True)
 class Dataset:
     """A graph-ready logical dataset."""
@@ -115,9 +119,40 @@ def _read_file(path: Path):
                         headers.append(_tokens(text))
                     continue
                 rows.append(_tokens(line))
-    except (OSError, UnicodeError):
-        return [], []
+    except (OSError, UnicodeError) as error:
+        raise IncompletePostProcessingError(
+            "OFGS error: OpenFOAM post-processing data is incomplete."
+        ) from error
     return headers, rows
+
+
+def _validate_rows(headers, rows, minimum_width):
+    if not rows:
+        raise IncompletePostProcessingError(
+            "OFGS error: OpenFOAM post-processing data is incomplete."
+        )
+    time_headers = [
+        header for header in headers
+        if header and header[0].lower() == "time"
+    ]
+    header_width = max((len(header) for header in time_headers), default=0)
+    expected_width = max(header_width, max(len(row) for row in rows))
+    if expected_width < minimum_width or any(len(row) != expected_width for row in rows):
+        raise IncompletePostProcessingError(
+            "OFGS error: OpenFOAM post-processing data is incomplete."
+        )
+    if any(not row or len(_value(row[0])) != 1 for row in rows):
+        raise IncompletePostProcessingError(
+            "OFGS error: OpenFOAM post-processing data is incomplete."
+        )
+    return expected_width
+
+
+def _require(condition):
+    if not condition:
+        raise IncompletePostProcessingError(
+            "OFGS error: OpenFOAM post-processing data is incomplete."
+        )
 
 
 def _source_label(path: Path) -> str:
@@ -163,11 +198,7 @@ def _components(
 
 def _time_series(owner: str, path: Path):
     headers, rows = _read_file(path)
-    rows = [row for row in rows if row and len(_value(row[0])) == 1]
-    if not rows or len(rows[0]) < 2:
-        return []
-
-    width = min(len(row) for row in rows)
+    width = _validate_rows(headers, rows, 2)
     headings = _column_header(headers, width)
     quantity_count = width - 1
     names = headings[1:width] if len(headings) >= width else []
@@ -251,15 +282,13 @@ def _time_series(owner: str, path: Path):
                     source=_source_label(path),
                 )
             )
+    _require(len(datasets) == len(quantities))
     return datasets
 
 
 def _residuals(owner: str, path: Path):
     headers, rows = _read_file(path)
-    rows = [row for row in rows if row and len(_value(row[0])) == 1]
-    if not rows:
-        return []
-    width = min(len(row) for row in rows)
+    width = _validate_rows(headers, rows, 2)
     headings = _column_header(headers, width)
     if not headings:
         headings = ["Time"] + [f"Column{index}" for index in range(2, width + 1)]
@@ -281,6 +310,8 @@ def _residuals(owner: str, path: Path):
             if final is not None:
                 metrics[owner]["final"] = final
 
+    _require(bool(metrics))
+
     datasets = []
     x_axis = tuple(_value(row[0])[0] for row in rows)
     for field, indices in metrics.items():
@@ -288,7 +319,8 @@ def _residuals(owner: str, path: Path):
         for metric_name in ("initial", "final"):
             index = indices.get(metric_name)
             values = _components(rows, index) if index is not None else ()
-            if values and len(values[0]) == 1:
+            if index is not None:
+                _require(bool(values) and len(values[0]) == 1)
                 named_series[metric_name.capitalize()] = tuple(value[0] for value in values)
         if named_series:
             datasets.append(
@@ -300,6 +332,7 @@ def _residuals(owner: str, path: Path):
                     source=_source_label(path),
                 )
             )
+    _require(bool(datasets))
     return datasets
 
 
@@ -313,9 +346,7 @@ def _grouped_rows(rows: Sequence[Sequence[str]], label_index: int):
 
 def _field_min_max(owner: str, path: Path):
     headers, rows = _read_file(path)
-    if not rows:
-        return []
-    width = min(len(row) for row in rows)
+    width = _validate_rows(headers, rows, 4)
     headings = _column_header(headers, width)
     lowered = [heading.lower() for heading in headings]
     field_index = next(
@@ -323,14 +354,15 @@ def _field_min_max(owner: str, path: Path):
     )
     min_index = next((i for i, value in enumerate(lowered) if value == "min"), 2)
     max_index = next((i for i, value in enumerate(lowered) if value == "max"), 3)
+    _require(max(field_index, min_index, max_index) < width)
     groups = _grouped_rows(rows, field_index)
+    _require(bool(groups))
 
     datasets = []
     for field, field_rows in sorted(groups.items()):
         minima = _components(field_rows, min_index)
         maxima = _components(field_rows, max_index)
-        if not minima or not maxima or len(minima[0]) != len(maxima[0]):
-            continue
+        _require(bool(minima) and bool(maxima) and len(minima[0]) == len(maxima[0]))
         x_axis = tuple(_value(row[0])[0] for row in field_rows)
         if len(minima[0]) == 1:
             series = {
@@ -357,9 +389,7 @@ def _field_min_max(owner: str, path: Path):
 
 def _patch_y_plus(owner: str, path: Path):
     headers, rows = _read_file(path)
-    if not rows:
-        return []
-    width = min(len(row) for row in rows)
+    width = _validate_rows(headers, rows, 4)
     headings = _column_header(headers, width)
     lowered = [heading.lower() for heading in headings]
     has_patch_column = width >= 5 and not _value(rows[0][1])
@@ -370,7 +400,9 @@ def _patch_y_plus(owner: str, path: Path):
         (i for i, value in enumerate(lowered) if value in {"average", "avg", "mean"}),
         4 if has_patch_column else 3,
     )
+    _require(max(min_index, max_index, average_index) < width)
     groups = _grouped_rows(rows, patch_index) if patch_index is not None else {owner: rows}
+    _require(bool(groups))
 
     datasets = []
     for patch, patch_rows in sorted(groups.items()):
@@ -379,8 +411,7 @@ def _patch_y_plus(owner: str, path: Path):
             values = _components(patch_rows, index)
             if values and len(values[0]) == 1:
                 values_by_name[label] = tuple(value[0] for value in values)
-        if len(values_by_name) != 3:
-            continue
+        _require(len(values_by_name) == 3)
         datasets.append(
             PatchYPlusDataset(
                 title=f"{patch} y+",
@@ -400,6 +431,31 @@ _PARSERS = {
     "patchYPlus.dat": _patch_y_plus,
     "yPlus.dat": _patch_y_plus,
 }
+
+SUPPORTED_FILENAMES = frozenset(_PARSERS)
+
+_FUNCTION_TYPE_OUTPUTS = {
+    "solverinfo": (frozenset({"solverInfo.dat"}),),
+    "surfacefieldvalue": (frozenset({"surfaceFieldValue.dat"}),),
+    "fieldminmax": (frozenset({"fieldMinMax.dat"}),),
+    "patchyplus": (frozenset({"patchYPlus.dat"}),),
+    # OpenFOAM variants have used both names for this output.
+    "yplus": (frozenset({"yPlus.dat", "patchYPlus.dat"}),),
+}
+
+
+def supported_output_expectations(configurations):
+    """Map enabled, directly configured supported objects to file alternatives."""
+    expectations = {}
+    for name, configuration in configurations.items():
+        if not configuration.get("enabled", True):
+            continue
+        alternatives = _FUNCTION_TYPE_OUTPUTS.get(
+            configuration.get("type", "").casefold()
+        )
+        if alternatives:
+            expectations[name] = alternatives
+    return expectations
 
 
 def parse_data_file(name: str, path: Path):
