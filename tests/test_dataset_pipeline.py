@@ -22,7 +22,11 @@ from core.discovery import (
     discover_post_processing,
     validate_post_processing_snapshot,
 )
-from core.generator import AtomicPublicationError, write_monitor
+from core.generator import (
+    AtomicPublicationError,
+    _remove_abandoned_staging,
+    write_monitor,
+)
 
 
 class DatasetPipelineTests(unittest.TestCase):
@@ -617,6 +621,76 @@ class DatasetPipelineTests(unittest.TestCase):
             self.assertEqual(path.read_text(), contents)
         self.assertEqual(list(graphs_path.glob(".ofgs-atomic-probe-*")), [])
         self.assertEqual(list(self.root.glob(".ofgs-generation-*")), [])
+
+    def test_accessible_abandoned_staging_is_removed(self):
+        abandoned = self.root / ".ofgs-generation-accessible"
+        abandoned.mkdir()
+        (abandoned / "partial.gp").write_text("partial")
+
+        _remove_abandoned_staging(self.root)
+
+        self.assertFalse(abandoned.exists())
+
+    def test_inaccessible_abandoned_staging_does_not_prevent_generation(self):
+        abandoned = self.root / ".ofgs-generation-other-user"
+        abandoned.mkdir()
+        marker = abandoned / "partial.gp"
+        marker.write_text("leave untouched")
+        unrelated = self.root / "simulation-staging"
+        unrelated.mkdir()
+
+        from core import generator
+
+        real_rmtree = generator.shutil.rmtree
+
+        def deny_abandoned_cleanup(path, *args, **kwargs):
+            if Path(path) == abandoned:
+                raise PermissionError("permission denied")
+            return real_rmtree(path, *args, **kwargs)
+
+        with patch(
+            "core.generator.shutil.rmtree",
+            side_effect=deny_abandoned_cleanup,
+        ):
+            write_monitor(
+                self.root,
+                [ScalarTimeSeriesDataset("replacement", (0.0,), {"value": (1.0,)})],
+            )
+
+        self.assertTrue((self.root / "monitor.gp").is_file())
+        self.assertTrue((self.root / "graphs" / "01.gp").is_file())
+        self.assertEqual(marker.read_text(), "leave untouched")
+        self.assertTrue(unrelated.is_dir())
+
+    def test_abandoned_staging_cleanup_ignores_files_and_symlinks(self):
+        matching_file = self.root / ".ofgs-generation-file"
+        matching_file.write_text("not a directory")
+        target = self.root / "unrelated-target"
+        target.mkdir()
+        marker = target / "keep"
+        marker.write_text("keep")
+        matching_symlink = self.root / ".ofgs-generation-link"
+        matching_symlink.symlink_to(target, target_is_directory=True)
+        unrelated = self.root / "other-directory"
+        unrelated.mkdir()
+
+        _remove_abandoned_staging(self.root)
+
+        self.assertTrue(matching_file.is_file())
+        self.assertTrue(matching_symlink.is_symlink())
+        self.assertEqual(marker.read_text(), "keep")
+        self.assertTrue(unrelated.is_dir())
+
+    def test_abandoned_staging_cleanup_propagates_unexpected_errors(self):
+        abandoned = self.root / ".ofgs-generation-programming-error"
+        abandoned.mkdir()
+
+        with patch(
+            "core.generator.shutil.rmtree",
+            side_effect=RuntimeError("unexpected failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected failure"):
+                _remove_abandoned_staging(self.root)
 
     def test_published_index_matches_numbered_graph_scripts(self):
         graphs_path = self.root / "graphs"

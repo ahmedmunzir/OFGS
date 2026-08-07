@@ -254,7 +254,13 @@ def _remove_abandoned_staging(case_path):
     """Remove staging directories left by a previously crashed generator."""
     for staging_path in case_path.glob(f"{_STAGING_PREFIX}*"):
         if staging_path.is_dir() and not staging_path.is_symlink():
-            shutil.rmtree(staging_path)
+            try:
+                shutil.rmtree(staging_path)
+            except PermissionError:
+                # A crashed generator owned by another collaborator may have
+                # left a private TemporaryDirectory. It is safe to ignore: the
+                # next generation uses a unique staging path.
+                continue
 
 
 def write_monitor(case_path, datasets):
