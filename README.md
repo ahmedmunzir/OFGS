@@ -1,4 +1,4 @@
-# OFGS (OpenFOAM Gnuplot Suite) v2.1.0
+# OFGS (OpenFOAM Gnuplot Suite) v2.2.0
 
 OFGS (OpenFOAM Gnuplot Suite) is a standalone command-line tool built around gnuplot for visualising OpenFOAM simulation data. It automatically detects supported datasets and provides commands for generating, viewing and live-monitoring simulation graphs.
 
@@ -109,6 +109,12 @@ For a more detailed view, use `ofgs list` to see the available graph IDs and sel
 
 `ofgs monitor --live` is best suited to getting an overview of the entire simulation while it is running, while viewing selected graphs individually or in smaller groups is recommended for a clearer and more focused view of specific results and trends.
 
+## Shared HPC Cases
+
+OFGS respects the existing Unix permissions of the OpenFOAM case.
+
+For collaborative cases, ensure the case uses an appropriate shared group with setgid/default ACLs and a cooperative umask such as `0002`. OFGS does not modify the ownership or permissions of OpenFOAM simulation data.
+
 ## Notes
 
 - Run commands from the root directory of an OpenFOAM case.
@@ -117,6 +123,44 @@ For a more detailed view, use `ofgs list` to see the available graph IDs and sel
 - Live mode refreshes graphs automatically every two seconds while a simulation is running.
 
 # Changelog
+
+<details>
+<summary><strong>v2.2.0</strong></summary>
+
+### Improved
+
+- Improved graph generation reliability during active OpenFOAM simulations.
+  - Prevents incomplete or unstable post-processing data from replacing valid generated graphs.
+  - Preserves the previous valid dashboard and graph set when generation cannot safely complete.
+  - Prevents graphs from temporarily disappearing while OpenFOAM is writing new post-processing output.
+
+- Improved concurrent OFGS generation.
+  - Added per-case generation locking.
+  - Prevents multiple OFGS generation processes from interfering with each other.
+  - Generated graph scripts, the dashboard and graph index are now published safely as a consistent set.
+
+- Improved generation safety.
+  - New output is prepared before replacing existing generated files.
+  - Failed generation preserves the previous valid output.
+  - Inaccessible abandoned OFGS staging directories no longer prevent otherwise valid generation.
+
+- Improved `ofgs generate` output.
+  - Removed verbose development and dataset diagnostics.
+  - Added concise case, graph-count and generation summaries.
+  - Added clearer errors when OpenFOAM post-processing data is incomplete or unstable.
+
+- Improved built-in help output.
+  - Interactive terminal formatting is preserved.
+  - Redirected and piped help output no longer contains ANSI escape sequences.
+
+### Fixed
+
+- Fixed an intermittent race where `ofgs graph <id>` could report that an existing graph did not exist during concurrent generation.
+- Fixed generation being able to publish a reduced graph set when OFGS read a newly created OpenFOAM timestep before it had finished being written.
+- Fixed abandoned inaccessible OFGS staging directories being able to block later generation.
+- Fixed ANSI colour sequences appearing in captured or redirected help output.
+
+</details>
 
 <details>
 <summary><strong>v2.1.0</strong></summary>
