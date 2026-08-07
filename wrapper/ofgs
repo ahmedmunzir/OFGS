@@ -71,9 +71,13 @@ help_heading() {
 }
 
 show_main_help() {
-    printf '\e[34m'
+    if [[ -t 1 ]]; then
+        printf '\e[34m'
+    fi
     help_heading "OFGS (OpenFOAM Gnuplot Suite)"
-    printf '\e[0m'
+    if [[ -t 1 ]]; then
+        printf '\e[0m'
+    fi
     cat <<'EOF'
 Generate and monitor OpenFOAM graphs with gnuplot.
 

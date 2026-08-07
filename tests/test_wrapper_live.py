@@ -222,6 +222,26 @@ class WrapperLiveTests(unittest.TestCase):
         self.assertIn("ofgs help <command>", help_output)
         self.assertNotIn("\033[", help_output)
 
+    def test_help_formatting_is_enabled_on_terminal_stdout(self):
+        status, main_output = run_with_terminal_stdout(
+            [str(WRAPPER), "help"],
+            PROJECT_ROOT,
+        )
+
+        self.assertEqual(status, 0)
+        self.assertIn("\033[34m", main_output)
+        self.assertIn("\033[1mOFGS (OpenFOAM Gnuplot Suite)\033[0m", main_output)
+        self.assertIn("\033[1mUsage\033[0m", main_output)
+
+        status, graph_output = run_with_terminal_stdout(
+            [str(WRAPPER), "help", "graph"],
+            PROJECT_ROOT,
+        )
+
+        self.assertEqual(status, 0)
+        self.assertIn("\033[1mofgs graph\033[0m", graph_output)
+        self.assertIn("\033[1mArguments\033[0m", graph_output)
+
     def test_command_specific_help(self):
         expected_content = {
             "generate": ("monitor.gp", "graphs/index.txt", "graphs/NN.gp"),
