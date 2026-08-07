@@ -161,6 +161,8 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 - Fixed ANSI colour sequences appearing in captured or redirected help output.
 
 </details>
+<details>
+<summary><strong>Previous Releases</strong></summary><br>
 
 <details>
 <summary><strong>v2.1.0</strong></summary>
@@ -200,8 +202,6 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 
 </details>
 
-<details>
-<summary><strong>Previous Releases</strong></summary><br>
 <details>
 <summary><strong>v2.0.0</strong></summary>
 
