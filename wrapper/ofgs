@@ -1,0 +1,745 @@
+#!/usr/bin/env bash
+# ofgs-wrapper
+
+set -u
+
+INSTALL_DIR="/usr/local/share/ofgs"
+REAL_GNUPLOT="/usr/bin/gnuplot"
+
+require_real_gnuplot() {
+    if [[ ! -x "$REAL_GNUPLOT" ]]; then
+        echo "Error: System gnuplot not found at /usr/bin/gnuplot" >&2
+        return 127
+    fi
+}
+
+run_real_gnuplot() {
+    require_real_gnuplot || exit $?
+    exec "$REAL_GNUPLOT" "$@"
+}
+
+run_generator_quietly() {
+    if [[ ! -f "$INSTALL_DIR/gnuplot_generate.py" ]]; then
+        echo "OFGS is not installed." >&2
+        return 1
+    fi
+    python3 "$INSTALL_DIR/gnuplot_generate.py" >/dev/null
+}
+
+graph_path_for() {
+    local requested_number="$1"
+    local graph_number
+    if [[ "$requested_number" =~ ^[0-9]+$ ]] && (( 10#$requested_number > 0 )); then
+        printf -v graph_number '%02d' "$((10#$requested_number))"
+        printf 'graphs/%s.gp\n' "$graph_number"
+        return
+    fi
+    return 1
+}
+
+graph_not_found() {
+    local requested_number="$1"
+    cat >&2 <<EOF
+Graph $requested_number does not exist.
+
+Run:
+
+    ofgs list
+
+to see available graphs.
+EOF
+}
+
+monitor_not_found() {
+    cat >&2 <<'EOF'
+No monitor.gp found.
+
+Run:
+
+    ofgs generate
+
+to generate the dashboard first.
+EOF
+}
+
+help_heading() {
+    if [[ -t 1 ]]; then
+        printf '\033[1m%s\033[0m\n' "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+show_main_help() {
+    printf '\e[34m'
+    help_heading "OFGS (OpenFOAM Gnuplot Suite)"
+    printf '\e[0m'
+    cat <<'EOF'
+Generate and monitor OpenFOAM graphs with gnuplot.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs <command> [options]
+  ofgs help <command>
+
+EOF
+    help_heading "Commands"
+    cat <<'EOF'
+  generate    Generate the dashboard and standalone graph scripts.
+  monitor     Open the dashboard, optionally with live updates.
+  graph       Open one or more graphs, optionally with live updates.
+  list        List generated graph IDs and titles.
+  clean       Remove generated dashboard and graph files.
+  doctor      Diagnose the current OFGS and OpenFOAM environment.
+  help        Show main or command-specific help.
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  -h, --help  Show this help.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs generate
+  ofgs monitor --live
+  ofgs graph 7
+  ofgs graph 1,6,7 --live
+  ofgs list
+  ofgs doctor
+
+Run 'ofgs help <command>' for command-specific help.
+EOF
+}
+
+show_generate_help() {
+    help_heading "ofgs generate"
+    cat <<'EOF'
+Generate the OpenFOAM monitoring dashboard and standalone graph scripts.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs generate
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  None.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs generate
+
+Creates monitor.gp, graphs/index.txt, and one numbered graphs/NN.gp script
+for every logical dataset discovered in the current OpenFOAM case.
+EOF
+}
+
+show_monitor_help() {
+    help_heading "ofgs monitor"
+    cat <<'EOF'
+Open the generated monitoring dashboard.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs monitor
+  ofgs monitor --live
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  --live  Regenerate and refresh the dashboard every two seconds.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs monitor
+  ofgs monitor --live
+
+Normal mode opens the existing monitor.gp. Live mode regenerates it before
+opening and continues updating it until interrupted or the window is closed.
+EOF
+}
+
+show_graph_help() {
+    help_heading "ofgs graph"
+    cat <<'EOF'
+Open one or more generated graphs in a single gnuplot window.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs graph <id>
+  ofgs graph <id1,id2,...>
+  ofgs graph <id> --live
+  ofgs graph <id1,id2,...> --live
+
+EOF
+    help_heading "Arguments"
+    cat <<'EOF'
+  <id>            A graph ID shown by 'ofgs list'.
+  <id1,id2,...>   Comma-separated graph IDs displayed in one window.
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  --live  Regenerate and refresh the selected graph view every two seconds.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs graph 7
+  ofgs graph 1,6,7
+  ofgs graph 7 --live
+  ofgs graph 1,6,7 --live
+EOF
+}
+
+show_list_help() {
+    help_heading "ofgs list"
+    cat <<'EOF'
+List the IDs and titles of all generated standalone graphs.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs list
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  None.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs list
+  ofgs graph 7
+
+Each graph ID identifies the matching numbered script in graphs/ and can be
+passed to 'ofgs graph'.
+EOF
+}
+
+show_clean_help() {
+    help_heading "ofgs clean"
+    cat <<'EOF'
+Remove OFGS-generated files from the current directory.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs clean
+  ofgs clean --force
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  --force  Remove generated files without asking for confirmation.
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs clean
+  ofgs clean --force
+
+Only monitor.gp and graphs/ are removed. Without --force, OFGS lists the
+targets and continues only after a y or Y response.
+EOF
+}
+
+show_doctor_help() {
+    help_heading "ofgs doctor"
+    cat <<'EOF'
+Diagnose the current OFGS installation and OpenFOAM case environment.
+
+EOF
+    help_heading "Usage"
+    cat <<'EOF'
+  ofgs doctor
+
+EOF
+    help_heading "Options"
+    cat <<'EOF'
+  None.
+
+EOF
+    help_heading "Checks"
+    cat <<'EOF'
+  OFGS installation files
+  System gnuplot executable
+  Python 3 availability
+  OpenFOAM system/ and constant/ directories
+  monitor.gp, graphs/, and graphs/index.txt
+  Supported datasets in postProcessing/
+  Number of generated graphs
+
+EOF
+    help_heading "Examples"
+    cat <<'EOF'
+  ofgs doctor
+
+Doctor is read-only: it never regenerates graphs or modifies files.
+EOF
+}
+
+show_command_help() {
+    case "$1" in
+        generate) show_generate_help ;;
+        monitor) show_monitor_help ;;
+        graph) show_graph_help ;;
+        list) show_list_help ;;
+        clean) show_clean_help ;;
+        doctor) show_doctor_help ;;
+        help) show_main_help ;;
+        *)
+            printf "Error: unknown help topic '%s'.\n\n" "$1" >&2
+            show_main_help
+            return 2
+            ;;
+    esac
+}
+
+clean_generated_files() {
+    local force="$1"
+    local response=""
+    local target
+    local -a targets=()
+
+    if [[ -f monitor.gp || -L monitor.gp ]]; then
+        targets+=("monitor.gp")
+    fi
+    if [[ -d graphs || -L graphs ]]; then
+        targets+=("graphs/")
+    fi
+
+    if [[ "${#targets[@]}" -eq 0 ]]; then
+        echo "No OFGS generated files found."
+        return 0
+    fi
+
+    if [[ "$force" == false ]]; then
+        printf 'This will remove:\n\n'
+        for target in "${targets[@]}"; do
+            printf '  %s\n' "$target"
+        done
+        printf '\nContinue? [y/N] '
+        read -r response || return 1
+        case "$response" in
+            y|Y) ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    for target in "${targets[@]}"; do
+        case "$target" in
+            monitor.gp) rm -f -- ./monitor.gp || return 1 ;;
+            graphs/) rm -rf -- ./graphs || return 1 ;;
+        esac
+    done
+
+    printf 'Removed:\n\n'
+    for target in "${targets[@]}"; do
+        printf '  %s\n' "$target"
+    done
+    printf '\nOFGS generated files removed successfully.\n'
+}
+
+supported_datasets_exist() {
+    python3 -B - "$INSTALL_DIR" >/dev/null 2>&1 <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+
+from core.dataset_parser import parse_datasets
+from core.discovery import discover_post_processing
+
+datasets = parse_datasets(discover_post_processing(Path.cwd()))
+raise SystemExit(0 if datasets else 1)
+PY
+}
+
+doctor_status() {
+    local status="$1"
+    local message="$2"
+    local colour
+
+    if [[ -t 1 ]]; then
+        case "$status" in
+            PASS) colour=32 ;;
+            WARN) colour=33 ;;
+            FAIL) colour=31 ;;
+        esac
+        printf '\033[%sm[%s]\033[0m %s\n' "$colour" "$status" "$message"
+    else
+        printf '[%s] %s\n' "$status" "$message"
+    fi
+}
+
+run_doctor() {
+    local errors=false
+    local warnings=false
+    local graph_count=0
+    local line
+
+    if [[ -f "$INSTALL_DIR/gnuplot_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+        doctor_status PASS "OFGS installation found"
+    else
+        doctor_status FAIL "OFGS installation not found"
+        errors=true
+    fi
+
+    if [[ -x "$REAL_GNUPLOT" ]]; then
+        doctor_status PASS "GNUPlot executable found"
+    else
+        doctor_status FAIL "GNUPlot executable not found"
+        errors=true
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        doctor_status PASS "Python 3 available"
+    else
+        doctor_status FAIL "Python 3 not available"
+        errors=true
+    fi
+
+    if [[ ! -d system || ! -d constant ]]; then
+        doctor_status FAIL "Current directory is not an OpenFOAM case."
+        echo
+        echo "Doctor found errors."
+        return 1
+    fi
+    doctor_status PASS "OpenFOAM case detected"
+
+    if [[ -f monitor.gp && -d graphs && -f graphs/index.txt ]]; then
+        doctor_status PASS "Dashboard generated"
+    else
+        doctor_status WARN "Dashboard has not been generated."
+        printf '\nRun:\n\n    ofgs generate\n'
+        warnings=true
+    fi
+
+    if [[ -d graphs && -f graphs/index.txt ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if [[ -n "$line" ]]; then
+                ((graph_count += 1))
+            fi
+        done < graphs/index.txt
+        printf 'Generated graphs: %d\n' "$graph_count"
+    fi
+
+    if command -v python3 >/dev/null 2>&1 \
+        && [[ -f "$INSTALL_DIR/gnuplot_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+        if supported_datasets_exist; then
+            doctor_status PASS "Supported datasets detected."
+        else
+            doctor_status WARN "No supported datasets detected."
+            warnings=true
+        fi
+    else
+        doctor_status WARN "Supported dataset check unavailable."
+        warnings=true
+    fi
+
+    echo
+    if [[ "$errors" == true ]]; then
+        echo "Doctor found errors."
+        return 1
+    fi
+    if [[ "$warnings" == true ]]; then
+        echo "Doctor completed with warnings."
+        return 0
+    fi
+    echo "Doctor completed successfully."
+}
+
+live_gnuplot_pid=""
+live_gnuplot_input=""
+temporary_graph_script=""
+selected_graph_paths=()
+
+remove_temporary_graph_script() {
+    if [[ -n "$temporary_graph_script" ]]; then
+        rm -f -- "$temporary_graph_script"
+        temporary_graph_script=""
+    fi
+}
+
+stop_live_session() {
+    trap - INT TERM EXIT
+    if [[ -n "$live_gnuplot_input" ]]; then
+        if [[
+            "$live_gnuplot_input" =~ ^[0-9]+$
+            && -e "/proc/$$/fd/$live_gnuplot_input"
+        ]]; then
+            printf 'exit gnuplot\n' 2>/dev/null >&"$live_gnuplot_input" || true
+            eval "exec ${live_gnuplot_input}>&-" 2>/dev/null || true
+        fi
+        live_gnuplot_input=""
+    fi
+    if [[ -n "$live_gnuplot_pid" ]]; then
+        kill "$live_gnuplot_pid" 2>/dev/null || true
+        wait "$live_gnuplot_pid" 2>/dev/null || true
+        live_gnuplot_pid=""
+    fi
+    remove_temporary_graph_script
+}
+
+write_multi_graph_script() {
+    local graph_count="${#selected_graph_paths[@]}"
+    local columns=1
+    local rows
+    local graph_path
+
+    while (( columns * columns < graph_count )); do
+        ((columns += 1))
+    done
+    rows=$(( (graph_count + columns - 1) / columns ))
+
+    for graph_path in "${selected_graph_paths[@]}"; do
+        [[ -f "$graph_path" ]] || return 1
+    done
+
+    {
+        printf '%s\n' \
+            "# Selected graphs generated by OFGS" \
+            "" \
+            "set terminal qt size 1600,900" \
+            "set grid" \
+            "" \
+            "set multiplot layout $rows,$columns" \
+            ""
+        for graph_path in "${selected_graph_paths[@]}"; do
+            printf "load \"< sed -e '/^set terminal /d' -e '/pause mouse close/d' '%s'\"\n" \
+                "$graph_path"
+        done
+        printf '%s\n' \
+            "" \
+            "unset multiplot" \
+            "" \
+            'if (!exists("LIVE_MODE")) pause mouse close'
+    } > "$temporary_graph_script"
+}
+
+run_multi_graph() {
+    local status
+    require_real_gnuplot || return $?
+    temporary_graph_script="$(mktemp "${TMPDIR:-/tmp}/gnuplot-selected.XXXXXX.gp")"
+    write_multi_graph_script || {
+        remove_temporary_graph_script
+        return 1
+    }
+    trap 'remove_temporary_graph_script; exit 130' INT TERM
+    trap remove_temporary_graph_script EXIT
+    "$REAL_GNUPLOT" "$temporary_graph_script"
+    status=$?
+    remove_temporary_graph_script
+    trap - INT TERM EXIT
+    return "$status"
+}
+
+run_live_session() {
+    local script_path="$1"
+    local refresh_callback="${2:-}"
+    require_real_gnuplot || return $?
+
+    coproc LIVE_GNUPLOT { "$REAL_GNUPLOT" >&2; }
+    live_gnuplot_pid="$LIVE_GNUPLOT_PID"
+    live_gnuplot_input="${LIVE_GNUPLOT[1]}"
+    trap 'stop_live_session; exit 130' INT TERM
+    trap stop_live_session EXIT
+
+    if ! printf '%s\n' \
+        'LIVE_MODE = 1' \
+        'bind all "Close" "exit gnuplot"' \
+        "load '$script_path'" 2>/dev/null >&"$live_gnuplot_input"; then
+        stop_live_session
+        return 1
+    fi
+
+    while kill -0 "$live_gnuplot_pid" 2>/dev/null; do
+        sleep 2
+        kill -0 "$live_gnuplot_pid" 2>/dev/null || break
+        run_generator_quietly
+        generation_status=$?
+        if [[ "$generation_status" -ne 0 ]]; then
+            stop_live_session
+            return "$generation_status"
+        fi
+        if [[ -n "$refresh_callback" ]] && ! "$refresh_callback"; then
+            break
+        fi
+        [[ -f "$script_path" ]] || break
+        if ! printf "load '%s'\n" "$script_path" 2>/dev/null >&"$live_gnuplot_input"; then
+            break
+        fi
+    done
+
+    stop_live_session
+}
+
+case "${1:-}" in
+    help)
+        if [[ "$#" -eq 1 ]]; then
+            show_main_help
+        elif [[ "$#" -eq 2 ]]; then
+            show_command_help "$2"
+            exit $?
+        else
+            echo "Usage: ofgs help [command]" >&2
+            exit 2
+        fi
+        ;;
+
+    --help|-h)
+        if [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs help [command]" >&2
+            exit 2
+        fi
+        show_main_help
+        ;;
+
+    generate)
+        if [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs generate" >&2
+            exit 2
+        fi
+        if [[ ! -f "$INSTALL_DIR/gnuplot_generate.py" ]]; then
+            echo "OFGS is not installed." >&2
+            exit 1
+        fi
+        exec python3 "$INSTALL_DIR/gnuplot_generate.py"
+        ;;
+
+    clean)
+        clean_force=false
+        if [[ "$#" -eq 2 && "$2" == "--force" ]]; then
+            clean_force=true
+        elif [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs clean [--force]" >&2
+            exit 2
+        fi
+        clean_generated_files "$clean_force"
+        exit $?
+        ;;
+
+    doctor)
+        if [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs doctor" >&2
+            exit 2
+        fi
+        run_doctor
+        exit $?
+        ;;
+
+    monitor)
+        if [[ "$#" -eq 2 && "$2" == "--live" ]]; then
+            run_generator_quietly || exit $?
+            if [[ ! -f monitor.gp ]]; then
+                monitor_not_found
+                exit 1
+            fi
+            run_live_session monitor.gp
+            exit $?
+        fi
+        if [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs monitor" >&2
+            exit 2
+        fi
+        if [[ ! -f monitor.gp ]]; then
+            monitor_not_found
+            exit 1
+        fi
+        run_real_gnuplot monitor.gp
+        ;;
+
+    graph)
+        graph_arguments=("${@:2}")
+        live_mode=false
+        graph_argument_count="${#graph_arguments[@]}"
+        if (( graph_argument_count > 0 )) \
+            && [[ "${graph_arguments[$((graph_argument_count - 1))]}" == "--live" ]]; then
+            live_mode=true
+            unset "graph_arguments[$((graph_argument_count - 1))]"
+        fi
+        if [[ "${#graph_arguments[@]}" -eq 0 ]]; then
+            echo "Usage: ofgs graph <number> [--live]" >&2
+            exit 2
+        fi
+
+        requested_graphs="${graph_arguments[*]}"
+        requested_graphs="${requested_graphs//[[:space:]]/}"
+        if [[ ! "$requested_graphs" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            graph_not_found "$requested_graphs"
+            exit 1
+        fi
+        if [[ "$live_mode" == true ]]; then
+            run_generator_quietly || exit $?
+        fi
+
+        IFS=, read -r -a requested_numbers <<< "$requested_graphs"
+        declare -A seen_graph_numbers=()
+        selected_graph_paths=()
+        for requested_number in "${requested_numbers[@]}"; do
+            graph_path="$(graph_path_for "$requested_number")" || graph_path=""
+            if [[ -z "$graph_path" || ! -f "$graph_path" ]]; then
+                graph_not_found "$requested_number"
+                exit 1
+            fi
+            canonical_number="${graph_path##*/}"
+            canonical_number="${canonical_number%.gp}"
+            if [[ -z "${seen_graph_numbers[$canonical_number]:-}" ]]; then
+                seen_graph_numbers["$canonical_number"]=1
+                selected_graph_paths+=("$graph_path")
+            fi
+        done
+
+        if [[ "${#selected_graph_paths[@]}" -eq 1 ]]; then
+            if [[ "$live_mode" == true ]]; then
+                run_live_session "${selected_graph_paths[0]}"
+                exit $?
+            fi
+            run_real_gnuplot "${selected_graph_paths[0]}"
+        fi
+
+        if [[ "$live_mode" == true ]]; then
+            temporary_graph_script="$(mktemp "${TMPDIR:-/tmp}/gnuplot-selected.XXXXXX.gp")"
+            write_multi_graph_script || {
+                remove_temporary_graph_script
+                exit 1
+            }
+            run_live_session "$temporary_graph_script" write_multi_graph_script
+            exit $?
+        fi
+        run_multi_graph
+        ;;
+
+    list)
+        if [[ "$#" -ne 1 ]]; then
+            echo "Usage: ofgs list" >&2
+            exit 2
+        fi
+        if [[ ! -f graphs/index.txt ]]; then
+            cat >&2 <<'EOF'
+No graph index found.
+
+Run:
+
+    ofgs generate
+
+to generate the dashboard first.
+EOF
+            exit 1
+        fi
+        exec cat graphs/index.txt
+        ;;
+
+    *)
+        run_real_gnuplot "$@"
+        ;;
+esac
