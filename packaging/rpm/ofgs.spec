@@ -1,5 +1,6 @@
 Name:           ofgs
-Version:        2.2.1
+%{!?upstream_version:%global upstream_version 2.2.1}
+Version:        %{upstream_version}
 Release:        1%{?dist}
 Summary:        OpenFOAM graph generation and monitoring suite
 

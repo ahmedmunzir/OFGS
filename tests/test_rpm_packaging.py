@@ -51,7 +51,7 @@ class RpmPackagingTests(unittest.TestCase):
     def test_package_metadata(self):
         expected_fields = {
             "Name": ["ofgs"],
-            "Version": ["2.2.1"],
+            "Version": ["%{upstream_version}"],
             "Release": ["1%{?dist}"],
             "Summary": ["OpenFOAM graph generation and monitoring suite"],
             "License": ["MIT"],
@@ -60,6 +60,11 @@ class RpmPackagingTests(unittest.TestCase):
         }
         for field, expected in expected_fields.items():
             self.assertEqual(spec_fields(self.spec, field), expected)
+
+        self.assertIn(
+            "%{!?upstream_version:%global upstream_version 2.2.1}",
+            self.spec,
+        )
 
         self.assertEqual(
             spec_fields(self.spec, "Source0"),

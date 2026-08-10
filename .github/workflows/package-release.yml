@@ -1,0 +1,297 @@
+name: Package release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version to validate and package (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      publish: ${{ steps.release.outputs.publish }}
+      source_commit: ${{ steps.release.outputs.source_commit }}
+      source_date_epoch: ${{ steps.release.outputs.source_date_epoch }}
+    steps:
+      - name: Check out the requested revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and source revision
+        id: release
+        env:
+          MANUAL_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            test "$GITHUB_REF_TYPE" = "tag"
+            release_tag="$GITHUB_REF_NAME"
+            publish=true
+          else
+            release_tag="$MANUAL_TAG"
+            publish=false
+          fi
+          version="$(python3 scripts/release_version.py "$release_tag")"
+          source_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          test "$(git rev-parse HEAD)" = "$source_commit"
+          if [[ "$publish" == "true" ]]; then
+            test "$(git rev-parse "refs/tags/${release_tag}^{commit}")" = "$source_commit"
+          fi
+          source_date_epoch="$(git show -s --format=%ct "$source_commit")"
+          {
+            echo "version=$version"
+            echo "tag=$release_tag"
+            echo "publish=$publish"
+            echo "source_commit=$source_commit"
+            echo "source_date_epoch=$source_date_epoch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate source and package metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          pycache_root="$(mktemp -d)"
+          PYTHONPYCACHEPREFIX="$pycache_root" python3 -m compileall -q \
+            core ofgs_generate.py scripts tests
+          bash -n install.sh uninstall.sh wrapper/ofgs
+          git diff --check
+          test -z "$(git status --short --untracked-files=no)"
+
+  debian:
+    needs: validate
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+    steps:
+      - name: Install Debian build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential debhelper devscripts git lintian python3
+
+      - name: Check out the validated revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.source_commit }}
+
+      - name: Create clean release tree and build Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          work_root="$RUNNER_TEMP/debian-release"
+          mkdir -p "$work_root"
+          git archive --format=tar --prefix="ofgs-$VERSION/" "$SOURCE_COMMIT" \
+            | tar -xf - -C "$work_root"
+          build_tree="$work_root/ofgs-$VERSION"
+          python3 scripts/release_version.py "$RELEASE_TAG" \
+            --prepare-tree "$build_tree" --format debian
+          test "$(dpkg-parsechangelog -l"$build_tree/debian/changelog" -S Version)" \
+            = "$VERSION-1"
+          (cd "$build_tree" && dpkg-buildpackage --no-sign -b)
+          deb="$work_root/ofgs_${VERSION}-1_all.deb"
+          test -f "$deb"
+          mkdir -p artifacts
+          cp "$deb" artifacts/
+
+      - name: Inspect and lint Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="artifacts/ofgs_${VERSION}-1_all.deb"
+          test "$(dpkg-deb -f "$deb" Version)" = "$VERSION-1"
+          test "$(dpkg-deb -f "$deb" Architecture)" = "all"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          lintian --fail-on error \
+            --suppress-tags initial-upload-closes-no-bugs "$deb"
+
+      - name: Install, exercise, and remove Debian package
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb="$GITHUB_WORKSPACE/artifacts/ofgs_${VERSION}-1_all.deb"
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
+          test "$(command -v ofgs)" = /usr/bin/ofgs
+          grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          ofgs --help
+          invalid_case="$(mktemp -d)"
+          set +e
+          (cd "$invalid_case" && ofgs generate)
+          generation_status=$?
+          set -e
+          test "$generation_status" -eq 1
+          test -z "$(find /usr/share/ofgs -type d -name __pycache__ -print -quit)"
+          test -z "$(find /usr/share/ofgs -type f -name '*.pyc' -print -quit)"
+          DEBIAN_FRONTEND=noninteractive apt-get remove -y ofgs
+          test ! -e /usr/bin/ofgs
+          test ! -e /usr/share/ofgs
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: artifacts/ofgs_${{ env.VERSION }}-1_all.deb
+          if-no-files-found: error
+
+  rpm:
+    needs: validate
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      SOURCE_COMMIT: ${{ needs.validate.outputs.source_commit }}
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+    steps:
+      - name: Install EL9 build tools
+        run: |
+          dnf install -y \
+            bash coreutils findutils git gzip make python3 redhat-rpm-config \
+            rpm-build rpmdevtools rpmlint tar which
+
+      - name: Check out the validated revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.source_commit }}
+
+      - name: Create deterministic source archive and build RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          work_root="$RUNNER_TEMP/rpm-release"
+          source_root="$work_root/source"
+          topdir="$work_root/rpmbuild"
+          mkdir -p "$source_root" "$topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+          git archive --format=tar --prefix="OFGS-$VERSION/" "$SOURCE_COMMIT" \
+            | tar -xf - -C "$source_root"
+          release_tree="$source_root/OFGS-$VERSION"
+          python3 scripts/release_version.py "$RELEASE_TAG" \
+            --prepare-tree "$release_tree" --format rpm
+          tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$source_root" -cf - "OFGS-$VERSION" \
+            | gzip -n > "$topdir/SOURCES/ofgs-$VERSION.tar.gz"
+          cp packaging/rpm/ofgs.spec "$topdir/SPECS/ofgs.spec"
+          rpm_version="$(rpmspec -q --qf '%{VERSION}\n' \
+            --define "upstream_version $VERSION" "$topdir/SPECS/ofgs.spec")"
+          test "$rpm_version" = "$VERSION"
+          rpmbuild -bb \
+            --define "_topdir $topdir" \
+            --define "upstream_version $VERSION" \
+            "$topdir/SPECS/ofgs.spec"
+          rpm="$topdir/RPMS/noarch/ofgs-${VERSION}-1.el9.noarch.rpm"
+          test -f "$rpm"
+          mkdir -p artifacts
+          cp "$rpm" artifacts/
+
+      - name: Inspect and lint RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          rpm="artifacts/ofgs-${VERSION}-1.el9.noarch.rpm"
+          test "$(rpm -qp --qf '%{VERSION}-%{RELEASE}\n' "$rpm")" \
+            = "$VERSION-1.el9"
+          test "$(rpm -qp --qf '%{ARCH}\n' "$rpm")" = "noarch"
+          rpm -qip "$rpm"
+          rpm -qlp "$rpm"
+          rpm -qpR "$rpm"
+          rpmlint "$rpm"
+
+      - name: Enable EPEL, install, exercise, and remove RPM
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y epel-release
+          rpm="$GITHUB_WORKSPACE/artifacts/ofgs-${VERSION}-1.el9.noarch.rpm"
+          dnf install -y "$rpm"
+          test "$(command -v ofgs)" = /usr/bin/ofgs
+          grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          ofgs --help
+          invalid_case="$(mktemp -d)"
+          set +e
+          (cd "$invalid_case" && ofgs generate)
+          generation_status=$?
+          set -e
+          test "$generation_status" -eq 1
+          test -z "$(find /usr/share/ofgs -type d -name __pycache__ -print -quit)"
+          test -z "$(find /usr/share/ofgs -type f -name '*.pyc' -print -quit)"
+          dnf remove -y ofgs
+          test ! -e /usr/bin/ofgs
+          test ! -e /usr/share/ofgs
+
+      - name: Upload RPM package
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: artifacts/ofgs-${{ env.VERSION }}-1.el9.noarch.rpm
+          if-no-files-found: error
+
+  publish:
+    needs: [validate, debian, rpm]
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - name: Download tested packages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          test -f "ofgs_${VERSION}-1_all.deb"
+          test -f "ofgs-${VERSION}-1.el9.noarch.rpm"
+          LC_ALL=C sha256sum \
+            "ofgs_${VERSION}-1_all.deb" \
+            "ofgs-${VERSION}-1.el9.noarch.rpm" \
+            > "ofgs-${VERSION}-SHA256SUMS"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=(
+            "dist/ofgs_${VERSION}-1_all.deb"
+            "dist/ofgs-${VERSION}-1.el9.noarch.rpm"
+            "dist/ofgs-${VERSION}-SHA256SUMS"
+          )
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --verify-tag --generate-notes --title "$RELEASE_TAG"
+          fi
