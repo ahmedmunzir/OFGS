@@ -67,6 +67,17 @@ def file_mode(path):
     return stat.S_IMODE(path.stat().st_mode)
 
 
+def tree_snapshot(root):
+    snapshot = {}
+    for path in root.rglob("*"):
+        relative_path = path.relative_to(root)
+        if path.is_file():
+            snapshot[relative_path] = ("file", file_mode(path), path.read_bytes())
+        elif path.is_dir():
+            snapshot[relative_path] = ("directory", file_mode(path))
+    return snapshot
+
+
 class InstallationTests(unittest.TestCase):
     def assert_staged_layout(self, root, prefix):
         staged_prefix = root / prefix.relative_to("/")
@@ -107,7 +118,7 @@ class InstallationTests(unittest.TestCase):
                     self.assertEqual(completed.returncode, 0, completed.stderr)
                     self.assert_staged_layout(root, prefix)
 
-    def test_installed_wrapper_resolves_runtime_for_its_prefix(self):
+    def test_installed_wrapper_does_not_write_bytecode_into_runtime(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             prefix = root / "prefix with spaces"
@@ -115,8 +126,10 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
 
             wrapper = prefix / "bin" / "ofgs"
+            runtime = prefix / "share" / "ofgs"
             empty_directory = root / "not-an-openfoam-case"
             empty_directory.mkdir()
+            runtime_before = tree_snapshot(runtime)
             generated = subprocess.run(
                 [str(wrapper), "generate"],
                 cwd=empty_directory,
@@ -127,7 +140,29 @@ class InstallationTests(unittest.TestCase):
             self.assertNotEqual(generated.returncode, 0)
             self.assertIn("OFGS - OpenFOAM Gnuplot Suite", generated.stdout)
             self.assertNotIn("OFGS is not installed.", generated.stderr)
-            self.assertIn(str(prefix / "share" / "ofgs"), wrapper.read_text())
+            self.assertEqual(tree_snapshot(runtime), runtime_before)
+
+            live = subprocess.run(
+                [str(wrapper), "monitor", "--live"],
+                cwd=empty_directory,
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(live.returncode, 0)
+            self.assertEqual(tree_snapshot(runtime), runtime_before)
+            self.assertFalse(any(runtime.rglob("__pycache__")))
+            self.assertFalse(any(runtime.rglob("*.pyc")))
+
+            wrapper_text = wrapper.read_text()
+            self.assertIn(str(runtime), wrapper_text)
+            self.assertIn(
+                'python3 -B "$OFGS_INSTALL_DIR/ofgs_generate.py"',
+                wrapper_text,
+            )
+            self.assertIn(
+                'exec python3 -B "$OFGS_INSTALL_DIR/ofgs_generate.py"',
+                wrapper_text,
+            )
 
     def test_update_installs_renamed_generator_and_removes_legacy_entrypoint(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

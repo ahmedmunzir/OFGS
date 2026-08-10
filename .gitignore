@@ -17,3 +17,12 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Debian package build output
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/ofgs/
+/debian/ofgs.debhelper.log
+/debian/ofgs.substvars
+/debian/tmp/

@@ -36,7 +36,7 @@ run_generator_quietly() {
         echo "OFGS is not installed." >&2
         return 1
     fi
-    python3 "$OFGS_INSTALL_DIR/ofgs_generate.py" >/dev/null
+    python3 -B "$OFGS_INSTALL_DIR/ofgs_generate.py" >/dev/null
 }
 
 graph_path_for() {
@@ -630,7 +630,7 @@ case "${1:-}" in
             echo "OFGS is not installed." >&2
             exit 1
         fi
-        exec python3 "$OFGS_INSTALL_DIR/ofgs_generate.py"
+        exec python3 -B "$OFGS_INSTALL_DIR/ofgs_generate.py"
         ;;
 
     clean)

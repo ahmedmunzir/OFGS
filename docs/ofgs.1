@@ -1,0 +1,160 @@
+.TH OFGS 1 "August 2026" "OFGS 2.2.1" "User Commands"
+.SH NAME
+ofgs \- generate and monitor OpenFOAM graphs with gnuplot
+.SH SYNOPSIS
+.B ofgs generate
+.br
+.B ofgs monitor
+.RB [ \-\-live ]
+.br
+.BI "ofgs graph " id
+.RB [ \-\-live ]
+.br
+.BI "ofgs graph " id1,id2,...
+.RB [ \-\-live ]
+.br
+.B ofgs list
+.br
+.B ofgs clean
+.RB [ \-\-force ]
+.br
+.B ofgs doctor
+.br
+.B ofgs help
+.br
+.BI "ofgs help " command
+.br
+.B ofgs \-h
+.br
+.B ofgs \-\-help
+.SH DESCRIPTION
+.B OFGS
+(OpenFOAM Gnuplot Suite) discovers supported OpenFOAM post-processing data
+and generates gnuplot dashboards and standalone graph scripts.
+It is intended to be run from the root directory of an OpenFOAM case.
+.SH COMMANDS
+.TP
+.B generate
+Discover supported datasets and generate
+.IR monitor.gp ,
+.IR graphs/index.txt ,
+and one numbered
+.I graphs/NN.gp
+script for each logical dataset.
+.TP
+.B monitor
+Open the existing dashboard in
+.IR monitor.gp .
+With
+.BR \-\-live ,
+regenerate before opening and regenerate and refresh every two seconds until
+interrupted or the window is closed.
+.TP
+.BI "graph " id
+Open the numbered standalone graph identified by
+.IR id .
+Graph IDs are shown by
+.BR "ofgs list" .
+.TP
+.BI "graph " id1,id2,...
+Open the selected comma-separated graph IDs together in one automatically
+arranged multiplot window. Duplicate IDs are ignored.
+With
+.BR \-\-live ,
+regenerate before opening and regenerate and refresh every two seconds.
+.TP
+.B list
+Print the generated graph IDs and titles from
+.IR graphs/index.txt .
+.TP
+.B clean
+Remove only
+.I monitor.gp
+and
+.I graphs/
+from the current directory after confirmation.
+OpenFOAM simulation data is never removed.
+Use
+.B \-\-force
+to skip confirmation.
+.TP
+.B doctor
+Perform read-only checks of the OFGS installation, gnuplot and Python
+availability, OpenFOAM case directories, generated dashboard files, and
+supported datasets.
+.TP
+.B help
+Show the main help page.
+When followed by a command name, show help for that command.
+.SH OPTIONS
+.TP
+.B \-\-live
+For
+.B monitor
+or
+.BR graph ,
+regenerate and refresh the selected view every two seconds.
+.TP
+.B \-\-force
+For
+.BR clean ,
+remove generated files without confirmation.
+.TP
+.BR \-h , " " \-\-help
+Show the main help page.
+.SH EXAMPLES
+.PP
+Generate the dashboard and standalone graph scripts:
+.PP
+.EX
+ofgs generate
+.EE
+.PP
+Open the dashboard with live updates:
+.PP
+.EX
+ofgs monitor --live
+.EE
+.PP
+Open one graph or a selected group:
+.PP
+.EX
+ofgs graph 7
+ofgs graph 1,6,7 --live
+.EE
+.PP
+List available graph IDs and titles:
+.PP
+.EX
+ofgs list
+.EE
+.SH GENERATED FILES
+.TP
+.I monitor.gp
+Gnuplot script for the complete dashboard.
+.TP
+.I graphs/index.txt
+Mapping of graph IDs to graph titles.
+.TP
+.I graphs/NN.gp
+Standalone gnuplot script for graph
+.IR NN .
+.TP
+.I .ofgs-generation.lock
+Case-local lock used to serialize graph generation.
+.SH ENVIRONMENT
+.TP
+.B PATH
+Used to locate the system gnuplot executable and Python 3.
+.TP
+.B TMPDIR
+Directory used for temporary selected multi-graph scripts. Defaults to
+.I /tmp
+when unset.
+.SH AUTHOR
+Written by Munzir Ahmed.
+.SH COPYRIGHT
+Copyright 2026 Munzir Ahmed.
+OFGS is distributed under the MIT License.
+.SH SEE ALSO
+.BR gnuplot (1)
