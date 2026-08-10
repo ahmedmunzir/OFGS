@@ -1,0 +1,19 @@
+Add an MIT LICENSE file to the OFGS repository.
+
+Use the standard canonical MIT License text.
+
+Copyright holder:
+
+Munzir Ahmed
+
+Copyright year:
+
+2026
+
+Also add a short License section near the end of README.md stating that OFGS is licensed under the MIT License and referring to the LICENSE file.
+
+Do not modify any source code, packaging code, tests, installation behavior, or other documentation.
+
+Do not commit or push the changes.
+
+After making the changes, show exactly which files were modified and run git diff --check.
