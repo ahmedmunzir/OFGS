@@ -42,6 +42,33 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("test \"$(git rev-parse HEAD)\" = \"$SOURCE_COMMIT\"", self.workflow)
 
+    def test_container_jobs_trust_only_the_checked_out_workspace(self):
+        safe_directory_command = (
+            'git config --global --add safe.directory "$GITHUB_WORKSPACE"'
+        )
+        self.assertEqual(self.workflow.count(safe_directory_command), 2)
+        self.assertNotIn("safe.directory '*'", self.workflow)
+        self.assertNotIn('safe.directory "*"', self.workflow)
+
+        for job_name in ("debian", "rpm"):
+            job = self.workflow.split(f"  {job_name}:\n", 1)[1]
+            if job_name == "debian":
+                job = job.split("  rpm:\n", 1)[0]
+            else:
+                job = job.split("  publish:\n", 1)[0]
+            self.assertLess(
+                job.index(safe_directory_command),
+                job.index("git rev-parse HEAD"),
+            )
+
+    def test_rocky_bootstrap_keeps_the_minimal_coreutils_package(self):
+        rpm_job = self.workflow.split("  rpm:\n", 1)[1].split("  publish:\n", 1)[0]
+        bootstrap = rpm_job.split("- name: Install EL9 build tools", 1)[1].split(
+            "- name: Check out the validated revision", 1
+        )[0]
+        self.assertNotIn("coreutils", bootstrap)
+        self.assertNotIn("--allowerasing", bootstrap)
+
 
 if __name__ == "__main__":
     unittest.main()

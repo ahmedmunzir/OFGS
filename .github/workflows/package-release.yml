@@ -92,6 +92,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.validate.outputs.source_commit }}
 
+      - name: Trust the checked-out workspace
+        shell: bash
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Create clean release tree and build Debian package
         shell: bash
         run: |
@@ -166,7 +170,7 @@ jobs:
       - name: Install EL9 build tools
         run: |
           dnf install -y \
-            bash coreutils findutils git gzip make python3 redhat-rpm-config \
+            bash findutils git gzip make python3 redhat-rpm-config \
             rpm-build rpmdevtools rpmlint tar which
 
       - name: Check out the validated revision
@@ -174,6 +178,10 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ needs.validate.outputs.source_commit }}
+
+      - name: Trust the checked-out workspace
+        shell: bash
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Create deterministic source archive and build RPM
         shell: bash
