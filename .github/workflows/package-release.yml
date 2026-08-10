@@ -216,6 +216,7 @@ jobs:
         shell: bash
         env:
           OFGS_PRIVATE_KEY: ${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}
+          OFGS_PASSPHRASE: ${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}
           EXPECTED_FINGERPRINT: ${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}
         run: |
           set -euo pipefail
@@ -249,12 +250,17 @@ jobs:
           test "$actual_fingerprint" = "$expected_fingerprint"
 
           release="$GITHUB_WORKSPACE/apt/dists/stable/Release"
-          gpg --batch --yes --local-user "$actual_fingerprint" \
-            --digest-algo SHA256 --clearsign \
-            --output "$GITHUB_WORKSPACE/apt/dists/stable/InRelease" "$release"
-          gpg --batch --yes --local-user "$actual_fingerprint" \
-            --digest-algo SHA256 --armor --detach-sign \
-            --output "$GITHUB_WORKSPACE/apt/dists/stable/Release.gpg" "$release"
+          printf '%s' "$OFGS_PASSPHRASE" | \
+            gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+              --local-user "$actual_fingerprint" \
+              --digest-algo SHA256 --clearsign \
+              --output "$GITHUB_WORKSPACE/apt/dists/stable/InRelease" "$release"
+          printf '%s' "$OFGS_PASSPHRASE" | \
+            gpg --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+              --local-user "$actual_fingerprint" \
+              --digest-algo SHA256 --armor --detach-sign \
+              --output "$GITHUB_WORKSPACE/apt/dists/stable/Release.gpg" "$release"
+          unset OFGS_PASSPHRASE
 
           mkdir -p "$GITHUB_WORKSPACE/public-key"
           gpg --batch --export "$actual_fingerprint" > \

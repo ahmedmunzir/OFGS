@@ -108,10 +108,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
         private_key_expression = (
             "${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}"
         )
+        passphrase_expression = (
+            "${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}"
+        )
         fingerprint_expression = (
             "${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}"
         )
         self.assertEqual(repository_job.count(private_key_expression), 1)
+        self.assertEqual(repository_job.count(passphrase_expression), 1)
         self.assertEqual(repository_job.count(fingerprint_expression), 1)
         self.assertIn('GNUPGHOME="$(mktemp -d ', repository_job)
         self.assertIn("export GNUPGHOME", repository_job)
@@ -132,6 +136,18 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("--clearsign", repository_job)
         self.assertIn("--armor --detach-sign", repository_job)
+        self.assertEqual(repository_job.count("--pinentry-mode loopback"), 2)
+        self.assertEqual(repository_job.count("--passphrase-fd 0"), 2)
+        self.assertEqual(
+            repository_job.count('printf \'%s\' "$OFGS_PASSPHRASE" |'), 2
+        )
+        self.assertIn("unset OFGS_PASSPHRASE", repository_job)
+        self.assertLess(
+            repository_job.rindex("--detach-sign"),
+            repository_job.index("unset OFGS_PASSPHRASE"),
+        )
+        self.assertNotIn('echo "$OFGS_PASSPHRASE"', repository_job)
+        self.assertNotIn('--passphrase "$OFGS_PASSPHRASE"', repository_job)
         self.assertIn(
             'printf \'%s\' "$OFGS_PRIVATE_KEY" | gpg --batch --quiet --import',
             repository_job,
