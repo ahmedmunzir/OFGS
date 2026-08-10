@@ -16,7 +16,6 @@ CORE_FILES = (
     "dataset_parser.py",
     "discovery.py",
     "generator.py",
-    "layout.py",
     "parser.py",
 )
 

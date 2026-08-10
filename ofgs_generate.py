@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 from contextlib import contextmanager
 import fcntl
 from pathlib import Path

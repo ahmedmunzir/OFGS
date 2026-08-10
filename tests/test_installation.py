@@ -11,7 +11,6 @@ CORE_FILES = {
     "dataset_parser.py",
     "discovery.py",
     "generator.py",
-    "layout.py",
     "parser.py",
 }
 
@@ -105,6 +104,9 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(file_mode(runtime), 0o755)
         self.assertEqual(file_mode(runtime / "core"), 0o755)
         self.assertEqual(file_mode(runtime / "ofgs_generate.py"), 0o644)
+        self.assertFalse(
+            (runtime / "ofgs_generate.py").read_text().startswith("#!")
+        )
         for filename in CORE_FILES:
             self.assertEqual(file_mode(runtime / "core" / filename), 0o644)
 

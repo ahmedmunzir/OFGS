@@ -15,7 +15,6 @@ EXPECTED_RUNTIME_FILES = {
     Path("usr/share/ofgs/core/dataset_parser.py"),
     Path("usr/share/ofgs/core/discovery.py"),
     Path("usr/share/ofgs/core/generator.py"),
-    Path("usr/share/ofgs/core/layout.py"),
     Path("usr/share/ofgs/core/parser.py"),
 }
 
@@ -144,6 +143,11 @@ class DebianPackagingTests(unittest.TestCase):
 
             for relative_path in EXPECTED_RUNTIME_FILES - {Path("usr/bin/ofgs")}:
                 self.assertEqual(mode(root / relative_path), 0o644)
+            self.assertFalse(
+                (root / "usr/share/ofgs/ofgs_generate.py")
+                .read_text()
+                .startswith("#!")
+            )
 
     def test_documentation_and_runtime_manifest_are_not_duplicated(self):
         docs = (DEBIAN_DIR / "docs").read_text().splitlines()
