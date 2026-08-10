@@ -3,7 +3,7 @@
 
 set -u
 
-INSTALL_DIR="/usr/local/share/ofgs"
+OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@
 
 resolve_gnuplot() {
     local candidate
@@ -32,11 +32,11 @@ run_real_gnuplot() {
 }
 
 run_generator_quietly() {
-    if [[ ! -f "$INSTALL_DIR/ofgs_generate.py" ]]; then
+    if [[ ! -f "$OFGS_INSTALL_DIR/ofgs_generate.py" ]]; then
         echo "OFGS is not installed." >&2
         return 1
     fi
-    python3 "$INSTALL_DIR/ofgs_generate.py" >/dev/null
+    python3 "$OFGS_INSTALL_DIR/ofgs_generate.py" >/dev/null
 }
 
 graph_path_for() {
@@ -367,7 +367,7 @@ clean_generated_files() {
 }
 
 supported_datasets_exist() {
-    python3 -B - "$INSTALL_DIR" >/dev/null 2>&1 <<'PY'
+    python3 -B - "$OFGS_INSTALL_DIR" >/dev/null 2>&1 <<'PY'
 import sys
 from pathlib import Path
 
@@ -404,7 +404,7 @@ run_doctor() {
     local graph_count=0
     local line
 
-    if [[ -f "$INSTALL_DIR/ofgs_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+    if [[ -f "$OFGS_INSTALL_DIR/ofgs_generate.py" && -d "$OFGS_INSTALL_DIR/core" ]]; then
         doctor_status PASS "OFGS installation found"
     else
         doctor_status FAIL "OFGS installation not found"
@@ -451,7 +451,7 @@ run_doctor() {
     fi
 
     if command -v python3 >/dev/null 2>&1 \
-        && [[ -f "$INSTALL_DIR/ofgs_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+        && [[ -f "$OFGS_INSTALL_DIR/ofgs_generate.py" && -d "$OFGS_INSTALL_DIR/core" ]]; then
         if supported_datasets_exist; then
             doctor_status PASS "Supported datasets detected."
         else
@@ -626,11 +626,11 @@ case "${1:-}" in
             echo "Usage: ofgs generate" >&2
             exit 2
         fi
-        if [[ ! -f "$INSTALL_DIR/ofgs_generate.py" ]]; then
+        if [[ ! -f "$OFGS_INSTALL_DIR/ofgs_generate.py" ]]; then
             echo "OFGS is not installed." >&2
             exit 1
         fi
-        exec python3 "$INSTALL_DIR/ofgs_generate.py"
+        exec python3 "$OFGS_INSTALL_DIR/ofgs_generate.py"
         ;;
 
     clean)

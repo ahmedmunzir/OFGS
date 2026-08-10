@@ -62,8 +62,8 @@ class WrapperLiveTests(unittest.TestCase):
             test_wrapper = root / "ofgs"
             test_wrapper.write_text(
                 WRAPPER.read_text().replace(
-                    'INSTALL_DIR="/usr/local/share/ofgs"',
-                    f'INSTALL_DIR="{install_root}"',
+                    'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                    f'OFGS_INSTALL_DIR="{install_root}"',
                     1,
                 )
             )
@@ -85,8 +85,8 @@ class WrapperLiveTests(unittest.TestCase):
             test_wrapper = root / "ofgs"
             test_wrapper.write_text(
                 WRAPPER.read_text().replace(
-                    'INSTALL_DIR="/usr/local/share/ofgs"',
-                    f'INSTALL_DIR="{PROJECT_ROOT}"',
+                    'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                    f'OFGS_INSTALL_DIR="{PROJECT_ROOT}"',
                     1,
                 )
             )
@@ -136,8 +136,8 @@ class WrapperLiveTests(unittest.TestCase):
             test_wrapper = root / "ofgs"
             test_wrapper.write_text(
                 WRAPPER.read_text().replace(
-                    'INSTALL_DIR="/usr/local/share/ofgs"',
-                    f'INSTALL_DIR="{install_root}"',
+                    'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                    f'OFGS_INSTALL_DIR="{install_root}"',
                     1,
                 )
             )
@@ -234,8 +234,8 @@ class WrapperLiveTests(unittest.TestCase):
             test_wrapper = root / "ofgs"
             test_wrapper.write_text(
                 WRAPPER.read_text().replace(
-                    'INSTALL_DIR="/usr/local/share/ofgs"',
-                    f'INSTALL_DIR="{PROJECT_ROOT}"',
+                    'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                    f'OFGS_INSTALL_DIR="{PROJECT_ROOT}"',
                     1,
                 )
             )
@@ -313,8 +313,8 @@ class WrapperLiveTests(unittest.TestCase):
             test_wrapper = root / "ofgs"
             test_wrapper.write_text(
                 WRAPPER.read_text().replace(
-                    'INSTALL_DIR="/usr/local/share/ofgs"',
-                    f'INSTALL_DIR="{generator_root}"',
+                    'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                    f'OFGS_INSTALL_DIR="{generator_root}"',
                     1,
                 )
             )
@@ -623,8 +623,8 @@ class WrapperLiveTests(unittest.TestCase):
         test_wrapper = root / "ofgs"
         test_wrapper.write_text(
             WRAPPER.read_text().replace(
-                'INSTALL_DIR="/usr/local/share/ofgs"',
-                f'INSTALL_DIR="{PROJECT_ROOT}"',
+                'OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@',
+                f'OFGS_INSTALL_DIR="{PROJECT_ROOT}"',
                 1,
             )
         )

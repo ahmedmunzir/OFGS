@@ -49,11 +49,7 @@ if [[ "$existing_installation" == true ]]; then
     fi
 fi
 
-install -d /usr/local/bin "$INSTALL_DIR/core"
-install -m 0755 "$project_root/wrapper/ofgs" "$wrapper_target"
-install -m 0755 "$project_root/ofgs_generate.py" "$INSTALL_DIR/ofgs_generate.py"
-install -m 0644 "$project_root"/core/*.py "$INSTALL_DIR/core/"
-install -m 0644 "$project_root/README.md" "$INSTALL_DIR/README.md"
+python3 "$project_root/scripts/install_runtime.py" --prefix /usr/local
 
 if [[ -e "$legacy_generator_target" || -L "$legacy_generator_target" ]]; then
     rm -f -- "$legacy_generator_target"
