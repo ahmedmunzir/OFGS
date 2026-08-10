@@ -1,4 +1,4 @@
-# OFGS (OpenFOAM Gnuplot Suite) v2.2.0
+# OFGS (OpenFOAM Gnuplot Suite) v2.2.1
 
 OFGS (OpenFOAM Gnuplot Suite) is a standalone command-line tool built around gnuplot for visualising OpenFOAM simulation data. It automatically detects supported datasets and provides commands for generating, viewing and live-monitoring simulation graphs.
 
@@ -125,6 +125,25 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 # Changelog
 
 <details>
+<summary><strong>v2.2.1</strong></summary>
+
+### Improved
+
+- Improved GNUPlot detection by locating it through the system `PATH` instead of relying on a fixed installation path.
+- Renamed the internal generator from `gnuplot_generate.py` to `ofgs_generate.py` for consistent OFGS naming.
+- Improved upgrade handling to safely remove the obsolete generator entrypoint.
+
+### Fixed
+
+- Fixed `ofgs generate` incorrectly returning a successful exit status when run outside a valid OpenFOAM case.
+- Improved exit-status propagation so OFGS failures behave correctly in shell scripts and automated workflows.
+- Added clearer handling when GNUPlot is unavailable.
+
+
+</details>
+<details>
+<summary><strong>Previous Releases</strong></summary><br>
+<details>
 <summary><strong>v2.2.0</strong></summary>
 
 ### Improved
@@ -161,9 +180,6 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 - Fixed ANSI colour sequences appearing in captured or redirected help output.
 
 </details>
-<details>
-<summary><strong>Previous Releases</strong></summary><br>
-
 <details>
 <summary><strong>v2.1.0</strong></summary>
 

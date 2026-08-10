@@ -10,7 +10,7 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
-import gnuplot_generate
+import ofgs_generate
 from core.dataset_parser import ScalarTimeSeriesDataset
 from core.generator import write_monitor
 from core.parser import parse_function_object_configurations
@@ -24,7 +24,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
         try:
             os.chdir(case)
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                status = gnuplot_generate.entrypoint()
+                status = ofgs_generate.entrypoint()
         finally:
             os.chdir(previous_directory)
         return status, stdout.getvalue(), stderr.getvalue()
@@ -71,7 +71,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
             try:
                 os.chdir(case)
                 with contextlib.redirect_stdout(stdout):
-                    gnuplot_generate.main()
+                    ofgs_generate.main()
             finally:
                 os.chdir(previous_directory)
 
@@ -98,23 +98,60 @@ class GeneratorEntrypointTests(unittest.TestCase):
             ):
                 self.assertNotIn(removed_output, stdout.getvalue())
 
+    def test_non_openfoam_directory_returns_failure_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 1)
+            self.assertIn("controlDict not found", stderr)
+            self.assertIn("does not appear to be an OpenFOAM case", stderr)
+            self.assertNotIn("Traceback", stderr)
+
+    def test_missing_control_dict_returns_failure_without_traceback(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            case = Path(temporary_directory)
+            (case / "system").mkdir()
+            (case / "constant").mkdir()
+
+            status, _stdout, stderr = self._run_in_case(case)
+
+            self.assertEqual(status, 1)
+            self.assertIn("system/controlDict not found", stderr)
+            self.assertNotIn("Traceback", stderr)
+
+    def test_expected_filesystem_error_returns_failure_without_traceback(self):
+        stderr = io.StringIO()
+        with patch.object(
+            ofgs_generate,
+            "main",
+            side_effect=PermissionError("generation output is not writable"),
+        ):
+            with contextlib.redirect_stderr(stderr):
+                status = ofgs_generate.entrypoint()
+
+        self.assertEqual(status, 1)
+        self.assertEqual(stderr.getvalue(), "generation output is not writable\n")
+        self.assertNotIn("Traceback", stderr.getvalue())
+
     def test_keyboard_interrupt_exits_without_traceback(self):
         stderr = io.StringIO()
-        with patch.object(gnuplot_generate, "main", side_effect=KeyboardInterrupt):
+        with patch.object(ofgs_generate, "main", side_effect=KeyboardInterrupt):
             with contextlib.redirect_stderr(stderr):
-                status = gnuplot_generate.entrypoint()
+                status = ofgs_generate.entrypoint()
 
         self.assertEqual(status, 130)
         self.assertEqual(stderr.getvalue(), "")
 
     def test_atomic_publication_error_exits_cleanly(self):
         stderr = io.StringIO()
-        error = gnuplot_generate.AtomicPublicationError(
+        error = ofgs_generate.AtomicPublicationError(
             "OFGS error: atomic publication unavailable."
         )
-        with patch.object(gnuplot_generate, "main", side_effect=error):
+        with patch.object(ofgs_generate, "main", side_effect=error):
             with contextlib.redirect_stderr(stderr):
-                status = gnuplot_generate.entrypoint()
+                status = ofgs_generate.entrypoint()
 
         self.assertEqual(status, 1)
         self.assertEqual(
@@ -204,7 +241,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
             )
             previous_monitor = (case / "monitor.gp").read_text()
             previous_index = (case / "graphs" / "index.txt").read_text()
-            real_parse = gnuplot_generate.parse_datasets
+            real_parse = ofgs_generate.parse_datasets
 
             def parse_then_change(outputs):
                 datasets = real_parse(outputs)
@@ -217,9 +254,9 @@ class GeneratorEntrypointTests(unittest.TestCase):
                 stderr = io.StringIO()
                 stdout = io.StringIO()
                 with patch.object(
-                    gnuplot_generate, "parse_datasets", side_effect=parse_then_change
+                    ofgs_generate, "parse_datasets", side_effect=parse_then_change
                 ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    status = gnuplot_generate.entrypoint()
+                    status = ofgs_generate.entrypoint()
             finally:
                 os.chdir(previous_directory)
 
@@ -309,7 +346,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
 
                 from core.dataset_parser import ScalarTimeSeriesDataset
                 from core.generator import write_monitor
-                from gnuplot_generate import generation_lock
+                from ofgs_generate import generation_lock
 
                 case = Path(sys.argv[1])
                 with (case / ".ofgs-generation.lock").open("a") as probe:
@@ -335,7 +372,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
                 """
             )
 
-            with gnuplot_generate.generation_lock(case):
+            with ofgs_generate.generation_lock(case):
                 child = subprocess.Popen(
                     [sys.executable, "-c", child_code, str(case)],
                     cwd=Path(__file__).resolve().parents[1],
@@ -375,14 +412,14 @@ class GeneratorEntrypointTests(unittest.TestCase):
                 from pathlib import Path
                 import sys
 
-                from gnuplot_generate import generation_lock
+                from ofgs_generate import generation_lock
 
                 with generation_lock(Path(sys.argv[1])):
                     print("ACQUIRED")
                 """
             )
 
-            with gnuplot_generate.generation_lock(first_case):
+            with ofgs_generate.generation_lock(first_case):
                 completed = subprocess.run(
                     [sys.executable, "-c", child_code, str(second_case)],
                     cwd=Path(__file__).resolve().parents[1],
@@ -403,7 +440,7 @@ class GeneratorEntrypointTests(unittest.TestCase):
                 from pathlib import Path
                 import sys
 
-                from gnuplot_generate import generation_lock
+                from ofgs_generate import generation_lock
 
                 with generation_lock(Path(sys.argv[1])):
                     print("ACQUIRED", flush=True)

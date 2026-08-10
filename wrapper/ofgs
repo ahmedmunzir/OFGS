@@ -4,11 +4,24 @@
 set -u
 
 INSTALL_DIR="/usr/local/share/ofgs"
-REAL_GNUPLOT="/usr/bin/gnuplot"
+
+resolve_gnuplot() {
+    local candidate
+    candidate="$(command -v gnuplot 2>/dev/null)" || return 1
+    if [[ -z "$candidate" || ! -x "$candidate" ]]; then
+        return 1
+    fi
+    if [[ -e "$0" && "$candidate" -ef "$0" ]]; then
+        return 1
+    fi
+    printf '%s\n' "$candidate"
+}
+
+REAL_GNUPLOT="$(resolve_gnuplot || true)"
 
 require_real_gnuplot() {
-    if [[ ! -x "$REAL_GNUPLOT" ]]; then
-        echo "Error: System gnuplot not found at /usr/bin/gnuplot" >&2
+    if [[ -z "$REAL_GNUPLOT" || ! -x "$REAL_GNUPLOT" ]]; then
+        echo "OFGS error: gnuplot was not found in PATH." >&2
         return 127
     fi
 }
@@ -19,11 +32,11 @@ run_real_gnuplot() {
 }
 
 run_generator_quietly() {
-    if [[ ! -f "$INSTALL_DIR/gnuplot_generate.py" ]]; then
+    if [[ ! -f "$INSTALL_DIR/ofgs_generate.py" ]]; then
         echo "OFGS is not installed." >&2
         return 1
     fi
-    python3 "$INSTALL_DIR/gnuplot_generate.py" >/dev/null
+    python3 "$INSTALL_DIR/ofgs_generate.py" >/dev/null
 }
 
 graph_path_for() {
@@ -391,14 +404,14 @@ run_doctor() {
     local graph_count=0
     local line
 
-    if [[ -f "$INSTALL_DIR/gnuplot_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+    if [[ -f "$INSTALL_DIR/ofgs_generate.py" && -d "$INSTALL_DIR/core" ]]; then
         doctor_status PASS "OFGS installation found"
     else
         doctor_status FAIL "OFGS installation not found"
         errors=true
     fi
 
-    if [[ -x "$REAL_GNUPLOT" ]]; then
+    if [[ -n "$REAL_GNUPLOT" && -x "$REAL_GNUPLOT" ]]; then
         doctor_status PASS "GNUPlot executable found"
     else
         doctor_status FAIL "GNUPlot executable not found"
@@ -438,7 +451,7 @@ run_doctor() {
     fi
 
     if command -v python3 >/dev/null 2>&1 \
-        && [[ -f "$INSTALL_DIR/gnuplot_generate.py" && -d "$INSTALL_DIR/core" ]]; then
+        && [[ -f "$INSTALL_DIR/ofgs_generate.py" && -d "$INSTALL_DIR/core" ]]; then
         if supported_datasets_exist; then
             doctor_status PASS "Supported datasets detected."
         else
@@ -613,11 +626,11 @@ case "${1:-}" in
             echo "Usage: ofgs generate" >&2
             exit 2
         fi
-        if [[ ! -f "$INSTALL_DIR/gnuplot_generate.py" ]]; then
+        if [[ ! -f "$INSTALL_DIR/ofgs_generate.py" ]]; then
             echo "OFGS is not installed." >&2
             exit 1
         fi
-        exec python3 "$INSTALL_DIR/gnuplot_generate.py"
+        exec python3 "$INSTALL_DIR/ofgs_generate.py"
         ;;
 
     clean)

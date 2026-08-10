@@ -6,6 +6,7 @@ project_root="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="/usr/local/share/ofgs"
 wrapper_target="/usr/local/bin/ofgs"
 legacy_wrapper_target="/usr/local/bin/gnuplot"
+legacy_generator_target="$INSTALL_DIR/gnuplot_generate.py"
 force=false
 existing_installation=false
 legacy_wrapper_found=false
@@ -50,9 +51,13 @@ fi
 
 install -d /usr/local/bin "$INSTALL_DIR/core"
 install -m 0755 "$project_root/wrapper/ofgs" "$wrapper_target"
-install -m 0755 "$project_root/gnuplot_generate.py" "$INSTALL_DIR/gnuplot_generate.py"
+install -m 0755 "$project_root/ofgs_generate.py" "$INSTALL_DIR/ofgs_generate.py"
 install -m 0644 "$project_root"/core/*.py "$INSTALL_DIR/core/"
 install -m 0644 "$project_root/README.md" "$INSTALL_DIR/README.md"
+
+if [[ -e "$legacy_generator_target" || -L "$legacy_generator_target" ]]; then
+    rm -f -- "$legacy_generator_target"
+fi
 
 if [[ "$legacy_wrapper_found" == true ]]; then
     rm -f -- "$legacy_wrapper_target"

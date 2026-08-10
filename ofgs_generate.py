@@ -97,11 +97,7 @@ def main():
 
     case = Path.cwd()
 
-    try:
-        control = verify_case(case)
-    except Exception as e:
-        print(e)
-        return
+    control = verify_case(case)
 
     with generation_lock(case):
         _generate_case(case, control)
@@ -124,6 +120,9 @@ def entrypoint():
             or (case / "graphs" / "index.txt").is_file()
         ):
             print("Existing generated graphs have been preserved.", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeError) as error:
+        print(error, file=sys.stderr)
         return 1
     return 0
 

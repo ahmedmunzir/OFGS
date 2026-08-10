@@ -1,6 +1,7 @@
 import os
 import pty
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -11,7 +12,13 @@ WRAPPER = Path(__file__).resolve().parents[1] / "wrapper" / "ofgs"
 PROJECT_ROOT = WRAPPER.parents[1]
 
 
-def run_with_terminal_stdout(command, cwd):
+def path_with(directory):
+    environment = os.environ.copy()
+    environment["PATH"] = str(directory) + os.pathsep + environment.get("PATH", "")
+    return environment
+
+
+def run_with_terminal_stdout(command, cwd, environment=None):
     master_fd, slave_fd = pty.openpty()
     try:
         process = subprocess.Popen(
@@ -19,6 +26,7 @@ def run_with_terminal_stdout(command, cwd):
             cwd=cwd,
             stdout=slave_fd,
             stderr=subprocess.DEVNULL,
+            env=environment,
         )
         os.close(slave_fd)
         slave_fd = -1
@@ -39,12 +47,222 @@ def run_with_terminal_stdout(command, cwd):
 
 
 class WrapperLiveTests(unittest.TestCase):
+    def test_generate_invokes_renamed_entrypoint_and_propagates_status(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            install_root = root / "installed files"
+            install_root.mkdir()
+            marker = root / "generator-ran"
+            (install_root / "ofgs_generate.py").write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                f"Path({str(marker)!r}).write_text('yes')\n"
+                "raise SystemExit(7)\n"
+            )
+            test_wrapper = root / "ofgs"
+            test_wrapper.write_text(
+                WRAPPER.read_text().replace(
+                    'INSTALL_DIR="/usr/local/share/ofgs"',
+                    f'INSTALL_DIR="{install_root}"',
+                    1,
+                )
+            )
+            test_wrapper.chmod(0o755)
+
+            completed = subprocess.run(
+                [str(test_wrapper), "generate"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 7)
+            self.assertEqual(marker.read_text(), "yes")
+
+    def test_generate_failure_is_visible_to_shell_operators(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            test_wrapper = root / "ofgs"
+            test_wrapper.write_text(
+                WRAPPER.read_text().replace(
+                    'INSTALL_DIR="/usr/local/share/ofgs"',
+                    f'INSTALL_DIR="{PROJECT_ROOT}"',
+                    1,
+                )
+            )
+            test_wrapper.chmod(0o755)
+
+            direct = subprocess.run(
+                [str(test_wrapper), "generate"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            with_and = subprocess.run(
+                ["/bin/bash", "-c", '"$1" generate && echo success', "_", str(test_wrapper)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            with_or = subprocess.run(
+                ["/bin/bash", "-c", '"$1" generate || echo failed', "_", str(test_wrapper)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(direct.returncode, 1)
+            self.assertNotIn("Traceback", direct.stderr)
+            self.assertNotEqual(with_and.returncode, 0)
+            self.assertNotIn("success", with_and.stdout)
+            self.assertEqual(with_or.returncode, 0)
+            self.assertIn("failed", with_or.stdout)
+
+    def test_live_commands_stop_when_generation_fails(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            install_root = root / "installed"
+            install_root.mkdir()
+            (install_root / "ofgs_generate.py").write_text("raise SystemExit(9)\n")
+            gnuplot_bin = root / "bin"
+            gnuplot_bin.mkdir()
+            launch_marker = root / "gnuplot-launched"
+            gnuplot = gnuplot_bin / "gnuplot"
+            gnuplot.write_text(
+                "#!/bin/bash\n"
+                f"touch {str(launch_marker)!r}\n"
+            )
+            gnuplot.chmod(0o755)
+            test_wrapper = root / "ofgs"
+            test_wrapper.write_text(
+                WRAPPER.read_text().replace(
+                    'INSTALL_DIR="/usr/local/share/ofgs"',
+                    f'INSTALL_DIR="{install_root}"',
+                    1,
+                )
+            )
+            test_wrapper.chmod(0o755)
+            (root / "monitor.gp").write_text("plot 1\n")
+            (root / "graphs").mkdir()
+            (root / "graphs" / "01.gp").write_text("plot 1\n")
+
+            for arguments in (("monitor", "--live"), ("graph", "1", "--live")):
+                with self.subTest(arguments=arguments):
+                    completed = subprocess.run(
+                        [str(test_wrapper), *arguments],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        env=path_with(gnuplot_bin),
+                    )
+                    self.assertEqual(completed.returncode, 9)
+                    self.assertFalse(launch_marker.exists())
+
+    def test_gnuplot_is_resolved_from_path_with_spaces(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            gnuplot_bin = root / "tools with spaces"
+            gnuplot_bin.mkdir()
+            invocation = root / "gnuplot-invocation"
+            gnuplot = gnuplot_bin / "gnuplot"
+            gnuplot.write_text(
+                "#!/bin/bash\n"
+                f"printf '%s\\n' \"$*\" > {str(invocation)!r}\n"
+            )
+            gnuplot.chmod(0o755)
+            (root / "monitor.gp").write_text("plot 1\n")
+
+            completed = subprocess.run(
+                [str(WRAPPER), "monitor.gp"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=path_with(gnuplot_bin),
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(invocation.read_text(), "monitor.gp\n")
+
+    def test_missing_gnuplot_returns_clean_status_127(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            empty_path = root / "empty-path"
+            empty_path.mkdir()
+            (root / "monitor.gp").write_text("plot 1\n")
+            environment = os.environ.copy()
+            environment["PATH"] = str(empty_path)
+
+            completed = subprocess.run(
+                ["/bin/bash", str(WRAPPER), "monitor.gp"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+            self.assertEqual(completed.returncode, 127)
+            self.assertEqual(
+                completed.stderr,
+                "OFGS error: gnuplot was not found in PATH.\n",
+            )
+
+    def test_gnuplot_path_resolving_to_ofgs_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            gnuplot_bin = root / "bin"
+            gnuplot_bin.mkdir()
+            (gnuplot_bin / "gnuplot").symlink_to(WRAPPER)
+            (root / "monitor.gp").write_text("plot 1\n")
+
+            completed = subprocess.run(
+                ["/bin/bash", str(WRAPPER), "monitor.gp"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=path_with(gnuplot_bin),
+            )
+
+            self.assertEqual(completed.returncode, 127)
+            self.assertIn("gnuplot was not found in PATH", completed.stderr)
+
+    def test_doctor_uses_path_based_gnuplot_discovery(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            command_bin = root / "commands"
+            command_bin.mkdir()
+            (command_bin / "python3").symlink_to(Path(sys.executable))
+            test_wrapper = root / "ofgs"
+            test_wrapper.write_text(
+                WRAPPER.read_text().replace(
+                    'INSTALL_DIR="/usr/local/share/ofgs"',
+                    f'INSTALL_DIR="{PROJECT_ROOT}"',
+                    1,
+                )
+            )
+            test_wrapper.chmod(0o755)
+            (root / "system").mkdir()
+            (root / "constant").mkdir()
+            environment = os.environ.copy()
+            environment["PATH"] = str(command_bin)
+
+            completed = subprocess.run(
+                ["/bin/bash", str(test_wrapper), "doctor"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("[FAIL] GNUPlot executable not found", completed.stdout)
+            self.assertIn("Doctor found errors.", completed.stdout)
+
     def test_live_multi_graph_regenerates_and_reloads_one_gnuplot_process(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             generator_root = root / "generator"
             generator_root.mkdir()
-            generator = generator_root / "gnuplot_generate.py"
+            generator = generator_root / "ofgs_generate.py"
             generator.write_text(
                 textwrap.dedent(
                     """
@@ -64,7 +282,9 @@ class WrapperLiveTests(unittest.TestCase):
 
             command_log = root / "gnuplot-commands"
             script_log = root / "multiplot-scripts"
-            fake_gnuplot = root / "fake-gnuplot"
+            gnuplot_bin = root / "gnuplot tools"
+            gnuplot_bin.mkdir()
+            fake_gnuplot = gnuplot_bin / "gnuplot"
             fake_gnuplot.write_text(
                 textwrap.dedent(
                     f"""\
@@ -96,10 +316,6 @@ class WrapperLiveTests(unittest.TestCase):
                     'INSTALL_DIR="/usr/local/share/ofgs"',
                     f'INSTALL_DIR="{generator_root}"',
                     1,
-                ).replace(
-                    'REAL_GNUPLOT="/usr/bin/gnuplot"',
-                    f'REAL_GNUPLOT="{fake_gnuplot}"',
-                    1,
                 )
             )
             test_wrapper.chmod(0o755)
@@ -110,6 +326,7 @@ class WrapperLiveTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 timeout=8,
+                env=path_with(gnuplot_bin),
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -134,7 +351,9 @@ class WrapperLiveTests(unittest.TestCase):
 
             captured_script = root / "captured-script"
             launch_marker = root / "gnuplot-launched"
-            fake_gnuplot = root / "fake-gnuplot"
+            gnuplot_bin = root / "custom-bin"
+            gnuplot_bin.mkdir()
+            fake_gnuplot = gnuplot_bin / "gnuplot"
             fake_gnuplot.write_text(
                 textwrap.dedent(
                     f"""\
@@ -149,13 +368,7 @@ class WrapperLiveTests(unittest.TestCase):
             )
             fake_gnuplot.chmod(0o755)
             test_wrapper = root / "ofgs"
-            test_wrapper.write_text(
-                WRAPPER.read_text().replace(
-                    'REAL_GNUPLOT="/usr/bin/gnuplot"',
-                    f'REAL_GNUPLOT="{fake_gnuplot}"',
-                    1,
-                )
-            )
+            test_wrapper.write_text(WRAPPER.read_text())
             test_wrapper.chmod(0o755)
 
             completed = subprocess.run(
@@ -163,6 +376,7 @@ class WrapperLiveTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
+                env=path_with(gnuplot_bin),
             )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
@@ -178,6 +392,7 @@ class WrapperLiveTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
+                env=path_with(gnuplot_bin),
             )
 
             self.assertEqual(missing.returncode, 1)
@@ -400,7 +615,9 @@ class WrapperLiveTests(unittest.TestCase):
             self.assertEqual(empty.stdout, "No OFGS generated files found.\n")
 
     def _doctor_wrapper(self, root):
-        fake_gnuplot = root / "fake-gnuplot"
+        gnuplot_bin = root / "doctor-bin"
+        gnuplot_bin.mkdir()
+        fake_gnuplot = gnuplot_bin / "gnuplot"
         fake_gnuplot.write_text("#!/usr/bin/env bash\nexit 0\n")
         fake_gnuplot.chmod(0o755)
         test_wrapper = root / "ofgs"
@@ -409,19 +626,15 @@ class WrapperLiveTests(unittest.TestCase):
                 'INSTALL_DIR="/usr/local/share/ofgs"',
                 f'INSTALL_DIR="{PROJECT_ROOT}"',
                 1,
-            ).replace(
-                'REAL_GNUPLOT="/usr/bin/gnuplot"',
-                f'REAL_GNUPLOT="{fake_gnuplot}"',
-                1,
             )
         )
         test_wrapper.chmod(0o755)
-        return test_wrapper
+        return test_wrapper, path_with(gnuplot_bin)
 
     def test_doctor_valid_case_is_read_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            test_wrapper = self._doctor_wrapper(root)
+            test_wrapper, environment = self._doctor_wrapper(root)
             (root / "system").mkdir()
             (root / "constant").mkdir()
             dataset_directory = root / "postProcessing" / "outlet" / "1"
@@ -445,6 +658,7 @@ class WrapperLiveTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
+                env=environment,
             )
 
             after = {
@@ -465,13 +679,14 @@ class WrapperLiveTests(unittest.TestCase):
     def test_doctor_outside_case_and_missing_dashboard(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            test_wrapper = self._doctor_wrapper(root)
+            test_wrapper, environment = self._doctor_wrapper(root)
 
             outside = subprocess.run(
                 [str(test_wrapper), "doctor"],
                 cwd=root,
                 capture_output=True,
                 text=True,
+                env=environment,
             )
             self.assertEqual(outside.returncode, 1)
             self.assertIn(
@@ -488,6 +703,7 @@ class WrapperLiveTests(unittest.TestCase):
                 cwd=root,
                 capture_output=True,
                 text=True,
+                env=environment,
             )
             self.assertEqual(valid_without_output.returncode, 0)
             self.assertIn(
@@ -504,11 +720,12 @@ class WrapperLiveTests(unittest.TestCase):
     def test_doctor_colours_only_status_tags_on_terminal(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            test_wrapper = self._doctor_wrapper(root)
+            test_wrapper, environment = self._doctor_wrapper(root)
 
             error_status, error_output = run_with_terminal_stdout(
                 [str(test_wrapper), "doctor"],
                 root,
+                environment,
             )
             self.assertEqual(error_status, 1)
             self.assertIn(
@@ -525,6 +742,7 @@ class WrapperLiveTests(unittest.TestCase):
             warning_status, warning_output = run_with_terminal_stdout(
                 [str(test_wrapper), "doctor"],
                 root,
+                environment,
             )
             self.assertEqual(warning_status, 0)
             self.assertIn(
