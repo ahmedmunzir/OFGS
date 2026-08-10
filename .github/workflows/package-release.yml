@@ -157,6 +157,204 @@ jobs:
           path: artifacts/ofgs_${{ env.VERSION }}-1_all.deb
           if-no-files-found: error
 
+  apt_repository:
+    needs: [validate, debian]
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Install APT repository tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            apt-utils dpkg-dev gnupg
+
+      - name: Download tested Debian package
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: debian-package
+
+      - name: Generate unsigned APT repository metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(debian-package/*.deb)
+          test "${#debs[@]}" -eq 1
+          deb="${debs[0]}"
+          test "$(basename "$deb")" = "ofgs_${VERSION}-1_all.deb"
+          test "$(dpkg-deb -f "$deb" Package)" = ofgs
+          test "$(dpkg-deb -f "$deb" Version)" = "$VERSION-1"
+          test "$(dpkg-deb -f "$deb" Architecture)" = all
+
+          repository="$GITHUB_WORKSPACE/apt"
+          packages_dir="$repository/dists/stable/main/binary-all"
+          pool_dir="$repository/pool/main/o/ofgs"
+          mkdir -p "$packages_dir" "$pool_dir"
+          cp "$deb" "$pool_dir/"
+
+          (
+            cd "$repository"
+            dpkg-scanpackages --arch all pool > \
+              dists/stable/main/binary-all/Packages
+            gzip -n -9 -c dists/stable/main/binary-all/Packages > \
+              dists/stable/main/binary-all/Packages.gz
+            apt-ftparchive \
+              -o APT::FTPArchive::Release::Origin=OFGS \
+              -o APT::FTPArchive::Release::Label=OFGS \
+              -o APT::FTPArchive::Release::Suite=stable \
+              -o APT::FTPArchive::Release::Codename=stable \
+              -o APT::FTPArchive::Release::Architectures=all \
+              -o APT::FTPArchive::Release::Components=main \
+              -o "APT::FTPArchive::Release::Description=OFGS APT repository" \
+              release dists/stable > dists/stable/Release
+          )
+
+      - name: Verify signing key and sign repository metadata
+        shell: bash
+        env:
+          OFGS_PRIVATE_KEY: ${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}
+          EXPECTED_FINGERPRINT: ${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d "$RUNNER_TEMP/ofgs-gnupg.XXXXXX")"
+          export GNUPGHOME
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf -- "$GNUPGHOME"' EXIT
+
+          printf '%s' "$OFGS_PRIVATE_KEY" | gpg --batch --quiet --import
+          unset OFGS_PRIVATE_KEY
+
+          expected_fingerprint="$(
+            printf '%s' "$EXPECTED_FINGERPRINT" \
+              | tr -d '[:space:]' \
+              | tr '[:lower:]' '[:upper:]'
+          )"
+          [[ "$expected_fingerprint" =~ ^[0-9A-F]{40}$ ]]
+
+          mapfile -t imported_fingerprints < <(
+            gpg --batch --with-colons --list-secret-keys --fingerprint \
+              | awk -F: '
+                  $1 == "sec" { primary = 1; next }
+                  primary && $1 == "fpr" {
+                    print toupper($10)
+                    primary = 0
+                  }
+                '
+          )
+          test "${#imported_fingerprints[@]}" -eq 1
+          actual_fingerprint="${imported_fingerprints[0]}"
+          test "$actual_fingerprint" = "$expected_fingerprint"
+
+          release="$GITHUB_WORKSPACE/apt/dists/stable/Release"
+          gpg --batch --yes --local-user "$actual_fingerprint" \
+            --digest-algo SHA256 --clearsign \
+            --output "$GITHUB_WORKSPACE/apt/dists/stable/InRelease" "$release"
+          gpg --batch --yes --local-user "$actual_fingerprint" \
+            --digest-algo SHA256 --armor --detach-sign \
+            --output "$GITHUB_WORKSPACE/apt/dists/stable/Release.gpg" "$release"
+
+          mkdir -p "$GITHUB_WORKSPACE/public-key"
+          gpg --batch --export "$actual_fingerprint" > \
+            "$GITHUB_WORKSPACE/public-key/ofgs-repository.gpg"
+          chmod 0644 "$GITHUB_WORKSPACE/public-key/ofgs-repository.gpg"
+
+      - name: Validate signed repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="$GITHUB_WORKSPACE/apt"
+          public_key="$GITHUB_WORKSPACE/public-key/ofgs-repository.gpg"
+          test -s "$repository/dists/stable/main/binary-all/Packages"
+          test -s "$repository/dists/stable/main/binary-all/Packages.gz"
+          test -s "$repository/dists/stable/Release"
+          test -s "$repository/dists/stable/InRelease"
+          test -s "$repository/dists/stable/Release.gpg"
+          test -s "$repository/pool/main/o/ofgs/ofgs_${VERSION}-1_all.deb"
+          test -s "$public_key"
+          grep -Fq "Filename: pool/main/o/ofgs/ofgs_${VERSION}-1_all.deb" \
+            "$repository/dists/stable/main/binary-all/Packages"
+          grep -Fq "main/binary-all/Packages" \
+            "$repository/dists/stable/Release"
+          grep -Fq "main/binary-all/Packages.gz" \
+            "$repository/dists/stable/Release"
+          gpgv --keyring "$public_key" "$repository/dists/stable/InRelease"
+          gpgv --keyring "$public_key" \
+            "$repository/dists/stable/Release.gpg" \
+            "$repository/dists/stable/Release"
+
+      - name: Upload signed APT repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-repository
+          path: apt
+          if-no-files-found: error
+
+      - name: Upload APT repository public key for acceptance testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-repository-public-key
+          path: public-key/ofgs-repository.gpg
+          if-no-files-found: error
+
+  apt_acceptance:
+    needs: [validate, apt_repository]
+    runs-on: ubuntu-latest
+    container: debian:12
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Download signed APT repository
+        uses: actions/download-artifact@v4
+        with:
+          name: apt-repository
+          path: apt
+
+      - name: Download OFGS repository public key
+        uses: actions/download-artifact@v4
+        with:
+          name: apt-repository-public-key
+          path: public-key
+
+      - name: Configure signed repository and update APT
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod -R a+rX apt
+          install -D -m 0644 public-key/ofgs-repository.gpg \
+            /usr/share/keyrings/ofgs-repository.gpg
+          printf '%s\n' \
+            "deb [arch=all signed-by=/usr/share/keyrings/ofgs-repository.gpg] file:${GITHUB_WORKSPACE}/apt stable main" \
+            > /etc/apt/sources.list.d/ofgs.list
+          apt-get update
+          policy="$(apt-cache policy ofgs)"
+          test "$(awk '/Candidate:/ { print $2 }' <<< "$policy")" = "$VERSION-1"
+          grep -Fq "file:${GITHUB_WORKSPACE}/apt" <<< "$policy"
+
+      - name: Install OFGS through APT, exercise it, and remove it
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ofgs
+          test "$(dpkg-query -W -f='${Version}' ofgs)" = "$VERSION-1"
+          test "$(command -v ofgs)" = /usr/bin/ofgs
+          test -d /usr/share/ofgs
+          grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          ofgs --help
+          invalid_case="$(mktemp -d)"
+          set +e
+          (cd "$invalid_case" && ofgs generate)
+          generation_status=$?
+          set -e
+          test "$generation_status" -eq 1
+          test -z "$(find /usr/share/ofgs -type d -name __pycache__ -print -quit)"
+          test -z "$(find /usr/share/ofgs -type f -name '*.pyc' -print -quit)"
+          DEBIAN_FRONTEND=noninteractive apt-get remove -y ofgs
+          test ! -e /usr/bin/ofgs
+          test ! -e /usr/share/ofgs
+
   rpm:
     needs: validate
     runs-on: ubuntu-latest
