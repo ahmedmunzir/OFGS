@@ -16,6 +16,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
             f"  {following_name}:\n", 1
         )[0]
 
+    def last_job(self, name):
+        return self.workflow.split(f"  {name}:\n", 1)[1]
+
     def test_trigger_and_publication_are_independently_guarded(self):
         self.assertIn('      - "v*"', self.workflow)
         self.assertIn("  workflow_dispatch:\n", self.workflow)
@@ -186,14 +189,94 @@ class ReleaseWorkflowTests(unittest.TestCase):
         repository_job = self.job("apt_repository", "apt_acceptance")
         self.assertIn("actions/upload-artifact@v4", repository_job)
         self.assertIn("name: apt-repository", repository_job)
-        self.assertNotIn("munzirahmed.dev", self.workflow)
+        self.assertNotIn("munzirahmed.dev", repository_job)
         self.assertNotIn("gh release", repository_job)
         self.assertNotIn("git push", repository_job)
 
-        publish_job = self.workflow.split("  publish:\n", 1)[1]
+        publish_job = self.job("publish", "publish_apt")
         self.assertIn("needs: [validate, debian, rpm]", publish_job)
         self.assertIn("needs.validate.outputs.publish == 'true'", publish_job)
         self.assertIn("github.event_name == 'push'", publish_job)
+
+    def test_website_publication_has_complete_release_gating_and_concurrency(self):
+        website_job = self.last_job("publish_apt")
+        self.assertIn(
+            "needs: [validate, debian, rpm, apt_repository, apt_acceptance]",
+            website_job,
+        )
+        self.assertIn("needs.validate.outputs.publish == 'true'", website_job)
+        self.assertIn("github.event_name == 'push'", website_job)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", website_job)
+        self.assertIn("group: ofgs-apt-website-publication", website_job)
+        self.assertIn("cancel-in-progress: false", website_job)
+        self.assertIn("permissions:\n      contents: read", website_job)
+
+    def test_website_publication_uses_only_restricted_pat_for_target_repo(self):
+        website_job = self.last_job("publish_apt")
+        pat_expression = "${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}"
+        self.assertEqual(website_job.count(pat_expression), 2)
+        self.assertIn("repository: ahmedmunzir/munzirahmed.dev", website_job)
+        self.assertIn("ref: main", website_job)
+        self.assertIn("persist-credentials: false", website_job)
+        self.assertIn("git push origin HEAD:main", website_job)
+        self.assertNotIn("--force", website_job)
+        self.assertNotIn("github.token", website_job)
+        self.assertNotIn(
+            "${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}", website_job
+        )
+        self.assertNotIn(
+            "${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}", website_job
+        )
+        self.assertNotIn(
+            "${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}", website_job
+        )
+        self.assertNotIn("set -x", website_job)
+        self.assertNotIn("https://x-access-token", website_job)
+
+    def test_website_publication_transfers_only_validated_apt_artifact(self):
+        website_job = self.last_job("publish_apt")
+        self.assertIn("name: apt-repository", website_job)
+        self.assertIn("actions/download-artifact@v4", website_job)
+        self.assertNotIn("dpkg-scanpackages", website_job)
+        self.assertNotIn("apt-ftparchive", website_job)
+        self.assertNotIn("dpkg-buildpackage", website_job)
+        self.assertNotIn("--clearsign", website_job)
+        self.assertNotIn("--detach-sign", website_job)
+        for path in (
+            "dists/stable/InRelease",
+            "dists/stable/Release",
+            "dists/stable/Release.gpg",
+            "dists/stable/main/binary-all/Packages",
+            "dists/stable/main/binary-all/Packages.gz",
+            'pool/main/o/ofgs/ofgs_${VERSION}-1_all.deb',
+        ):
+            self.assertIn(path, website_job)
+        self.assertIn("find . -type f", website_job)
+        self.assertIn("! -type d ! -type f", website_job)
+        self.assertIn("PRIVATE KEY", website_job)
+
+    def test_website_update_is_scoped_and_preserves_keys_and_other_content(self):
+        website_job = self.last_job("publish_apt")
+        self.assertIn("git rm -r --ignore-unmatch -- packages/apt", website_job)
+        self.assertIn('cp -a "$APT_ARTIFACT"/. packages/apt/', website_job)
+        self.assertIn('diff -qr "$APT_ARTIFACT" packages/apt', website_job)
+        self.assertIn("packages/keys/ofgs-repository.asc", website_job)
+        self.assertIn("packages/keys/ofgs-repository.gpg", website_job)
+        self.assertIn('test "$keys_after" = "$keys_before"', website_job)
+        self.assertIn("git add --all -- packages/apt", website_job)
+        self.assertIn("':(exclude)packages/apt/**'", website_job)
+        self.assertIn('[[ "$changed_path" == packages/apt/* ]]', website_job)
+
+    def test_website_no_change_path_skips_commit_and_push(self):
+        website_job = self.last_job("publish_apt")
+        quiet = website_job.index("if git diff --cached --quiet; then")
+        commit = website_job.index("git commit -m")
+        self.assertLess(quiet, commit)
+        self.assertIn('echo "changed=false" >> "$GITHUB_OUTPUT"', website_job)
+        self.assertIn("exit 0", website_job[quiet:commit])
+        self.assertIn("if: steps.update.outputs.changed == 'true'", website_job)
+        self.assertIn('git config user.name "OFGS release automation"', website_job)
+        self.assertIn("git config user.email", website_job)
 
 
 if __name__ == "__main__":
