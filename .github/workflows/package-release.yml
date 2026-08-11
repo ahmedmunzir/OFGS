@@ -460,6 +460,246 @@ jobs:
           path: artifacts/ofgs-${{ env.VERSION }}-1.el9.noarch.rpm
           if-no-files-found: error
 
+  rpm_repository:
+    needs: [validate, rpm]
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Install RPM repository tools
+        run: |
+          dnf install -y createrepo_c findutils gnupg2 rpm-sign
+
+      - name: Download tested RPM package
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-package
+          path: rpm-package
+
+      - name: Prepare RPM repository package tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rpms=(rpm-package/*.rpm)
+          test "${#rpms[@]}" -eq 1
+          source_rpm="${rpms[0]}"
+          test "$(basename "$source_rpm")" = \
+            "ofgs-${VERSION}-1.el9.noarch.rpm"
+          test "$(rpm -qp --qf '%{NAME}\n' "$source_rpm")" = ofgs
+          test "$(rpm -qp --qf '%{VERSION}-%{RELEASE}\n' "$source_rpm")" = \
+            "$VERSION-1.el9"
+          test "$(rpm -qp --qf '%{ARCH}\n' "$source_rpm")" = noarch
+
+          mkdir -p rpm/Packages
+          cp "$source_rpm" rpm/Packages/
+
+      - name: Verify signing key and sign RPM repository
+        shell: bash
+        env:
+          OFGS_PRIVATE_KEY: ${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}
+          OFGS_PASSPHRASE: ${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}
+          EXPECTED_FINGERPRINT: ${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d "$RUNNER_TEMP/ofgs-rpm-gnupg.XXXXXX")"
+          export GNUPGHOME
+          chmod 700 "$GNUPGHOME"
+          trap 'rm -rf -- "$GNUPGHOME"' EXIT
+
+          printf '%s' "$OFGS_PRIVATE_KEY" | gpg2 --batch --quiet --import
+          unset OFGS_PRIVATE_KEY
+
+          expected_fingerprint="$(
+            printf '%s' "$EXPECTED_FINGERPRINT" \
+              | tr -d '[:space:]' \
+              | tr '[:lower:]' '[:upper:]'
+          )"
+          [[ "$expected_fingerprint" =~ ^[0-9A-F]{40}$ ]]
+
+          mapfile -t imported_fingerprints < <(
+            gpg2 --batch --with-colons --list-secret-keys --fingerprint \
+              | awk -F: '
+                  $1 == "sec" { primary = 1; next }
+                  primary && $1 == "fpr" {
+                    print toupper($10)
+                    primary = 0
+                  }
+                '
+          )
+          test "${#imported_fingerprints[@]}" -eq 1
+          actual_fingerprint="${imported_fingerprints[0]}"
+          test "$actual_fingerprint" = "$expected_fingerprint"
+
+          package="$GITHUB_WORKSPACE/rpm/Packages/ofgs-${VERSION}-1.el9.noarch.rpm"
+          sign_command="$(rpm \
+            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-fd 0" \
+            --eval '%{__gpg_sign_cmd}')"
+          grep -Fq -- '--pinentry-mode loopback' <<< "$sign_command"
+          grep -Fq -- '--passphrase-fd 0' <<< "$sign_command"
+          printf '%s' "$OFGS_PASSPHRASE" | \
+            rpmsign --addsign \
+              --define "_signature gpg" \
+              --define "_gpg_name $actual_fingerprint" \
+              --define "_gpg_path $GNUPGHOME" \
+              --define "_gpg_digest_algo sha256" \
+              --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-fd 0" \
+              "$package"
+
+          createrepo_c "$GITHUB_WORKSPACE/rpm"
+          repomd="$GITHUB_WORKSPACE/rpm/repodata/repomd.xml"
+          printf '%s' "$OFGS_PASSPHRASE" | \
+            gpg2 --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
+              --local-user "$actual_fingerprint" \
+              --digest-algo SHA256 --armor --detach-sign \
+              --output "${repomd}.asc" "$repomd"
+          unset OFGS_PASSPHRASE
+
+          mkdir -p "$GITHUB_WORKSPACE/rpm-public-key"
+          gpg2 --batch --export "$actual_fingerprint" > \
+            "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+          chmod 0644 "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+
+      - name: Validate signed RPM repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="$GITHUB_WORKSPACE/rpm"
+          package="$repository/Packages/ofgs-${VERSION}-1.el9.noarch.rpm"
+          repomd="$repository/repodata/repomd.xml"
+          public_key="$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+
+          test -s "$package"
+          test "$(rpm -qp --qf '%{NAME}\n' "$package")" = ofgs
+          test "$(rpm -qp --qf '%{VERSION}-%{RELEASE}\n' "$package")" = \
+            "$VERSION-1.el9"
+          test "$(rpm -qp --qf '%{ARCH}\n' "$package")" = noarch
+          test -s "$repomd"
+          test -s "${repomd}.asc"
+          test -s "$public_key"
+          test -n "$(find "$repository/repodata" -type f \
+            ! -name repomd.xml ! -name repomd.xml.asc -print -quit)"
+          test -z "$(find "$repository" -type f -empty -print -quit)"
+          test -z "$(find "$repository" ! -type d ! -type f -print -quit)"
+          test -z "$(find "$repository" -iname '*gnupg*' \
+            -o -iname 'private-keys-v1.d' \
+            -o -iname 'pubring.*' \
+            -o -iname 'trustdb.gpg')"
+          if grep -R -a -q -E \
+            'BEGIN (PGP )?PRIVATE KEY|OFGS_REPOSITORY_GPG_PRIVATE_KEY|OFGS_REPOSITORY_GPG_PASSPHRASE' \
+            "$repository"; then
+            echo "Unexpected sensitive material marker in RPM repository." >&2
+            exit 1
+          fi
+
+          verification_home="$(mktemp -d "$RUNNER_TEMP/ofgs-rpm-gpgv.XXXXXX")"
+          chmod 700 "$verification_home"
+          gpgv2 --homedir "$verification_home" --keyring "$public_key" \
+            "${repomd}.asc" "$repomd"
+          rpm_database="$(mktemp -d "$RUNNER_TEMP/ofgs-rpmdb.XXXXXX")"
+          rpm --dbpath "$rpm_database" --initdb
+          rpm --dbpath "$rpm_database" --import "$public_key"
+          signature_check="$(
+            rpmkeys --dbpath "$rpm_database" --checksig "$package"
+          )"
+          grep -Fq 'digests signatures OK' <<< "$signature_check"
+
+      - name: Upload signed RPM repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-repository
+          path: rpm
+          if-no-files-found: error
+
+      - name: Upload RPM repository public key for acceptance testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-repository-public-key
+          path: rpm-public-key/ofgs-repository.gpg
+          if-no-files-found: error
+
+  rpm_acceptance:
+    needs: [validate, rpm_repository]
+    runs-on: ubuntu-latest
+    container: rockylinux:9
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Enable EPEL and install repository test tools
+        run: |
+          dnf install -y dnf-plugins-core epel-release
+
+      - name: Download signed RPM repository
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-repository
+          path: rpm
+
+      - name: Download OFGS repository public key
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-repository-public-key
+          path: rpm-public-key
+
+      - name: Configure signed OFGS repository and verify its package
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod -R a+rX rpm rpm-public-key
+          printf '%s\n' \
+            '[ofgs]' \
+            'name=OFGS EL9' \
+            "baseurl=file://${GITHUB_WORKSPACE}/rpm" \
+            'enabled=1' \
+            'gpgcheck=1' \
+            'repo_gpgcheck=1' \
+            "gpgkey=file://${GITHUB_WORKSPACE}/rpm-public-key/ofgs-repository.gpg" \
+            > /etc/yum.repos.d/ofgs.repo
+          dnf clean all
+          dnf -y --disablerepo='*' --enablerepo=ofgs makecache
+          repository_package="$(
+            dnf -q --disablerepo='*' --enablerepo=ofgs repoquery \
+              --qf '%{name}|%{version}-%{release}|%{arch}' ofgs
+          )"
+          test "$repository_package" = \
+            "ofgs|${VERSION}-1.el9|noarch"
+          package_location="$(
+            dnf -q --disablerepo='*' --enablerepo=ofgs repoquery \
+              --location ofgs
+          )"
+          [[ "$package_location" == file:*"/rpm/Packages/ofgs-${VERSION}-1.el9.noarch.rpm" ]]
+
+      - name: Install OFGS through DNF, exercise it, and remove it
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf -y \
+            --disablerepo='*' \
+            --enablerepo=baseos \
+            --enablerepo=appstream \
+            --enablerepo=extras \
+            --enablerepo=epel \
+            --enablerepo=ofgs \
+            repository-packages ofgs install ofgs
+          test "$(rpm -q --qf '%{VERSION}-%{RELEASE}\n' ofgs)" = \
+            "$VERSION-1.el9"
+          test "$(command -v ofgs)" = /usr/bin/ofgs
+          test -d /usr/share/ofgs
+          grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          ofgs --help
+          invalid_case="$(mktemp -d)"
+          set +e
+          (cd "$invalid_case" && ofgs generate)
+          generation_status=$?
+          set -e
+          test "$generation_status" -eq 1
+          test -z "$(find /usr/share/ofgs -type d -name __pycache__ -print -quit)"
+          test -z "$(find /usr/share/ofgs -type f -name '*.pyc' -print -quit)"
+          dnf remove -y ofgs
+          test ! -e /usr/bin/ofgs
+          test ! -e /usr/share/ofgs
+
   publish:
     needs: [validate, debian, rpm]
     if: >-

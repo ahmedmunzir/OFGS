@@ -278,6 +278,115 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('git config user.name "OFGS release automation"', website_job)
         self.assertIn("git config user.email", website_job)
 
+    def test_rpm_repository_consumes_tested_artifact_without_rebuilding(self):
+        repository_job = self.job("rpm_repository", "rpm_acceptance")
+        self.assertIn("needs: [validate, rpm]", repository_job)
+        self.assertIn("name: rpm-package", repository_job)
+        self.assertIn("actions/download-artifact@v4", repository_job)
+        self.assertIn('cp "$source_rpm" rpm/Packages/', repository_job)
+        self.assertIn("createrepo_c", repository_job)
+        self.assertNotIn("rpmbuild", repository_job)
+        self.assertNotIn("ofgs.spec", repository_job)
+        self.assertIn(
+            'rpm/Packages/ofgs-${VERSION}-1.el9.noarch.rpm', repository_job
+        )
+        self.assertIn("rpm/repodata/repomd.xml", repository_job)
+        self.assertIn("${repomd}.asc", repository_job)
+        self.assertIn("name: rpm-repository", repository_job)
+        self.assertIn("actions/upload-artifact@v4", repository_job)
+
+    def test_rpm_repository_signing_is_isolated_verified_and_noninteractive(self):
+        repository_job = self.job("rpm_repository", "rpm_acceptance")
+        private_key = "${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}"
+        passphrase = "${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}"
+        fingerprint = "${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}"
+        self.assertEqual(repository_job.count(private_key), 1)
+        self.assertEqual(repository_job.count(passphrase), 1)
+        self.assertEqual(repository_job.count(fingerprint), 1)
+        self.assertIn('GNUPGHOME="$(mktemp -d ', repository_job)
+        self.assertIn("export GNUPGHOME", repository_job)
+        self.assertIn("unset OFGS_PRIVATE_KEY", repository_job)
+        self.assertIn("unset OFGS_PASSPHRASE", repository_job)
+        self.assertIn("--list-secret-keys --fingerprint", repository_job)
+        comparison = 'test "$actual_fingerprint" = "$expected_fingerprint"'
+        self.assertIn(comparison, repository_job)
+        self.assertLess(repository_job.index(comparison), repository_job.index("rpmsign"))
+        self.assertIn("rpmsign --addsign", repository_job)
+        self.assertIn('--define "_gpg_name $actual_fingerprint"', repository_job)
+        self.assertIn('--define "_gpg_path $GNUPGHOME"', repository_job)
+        self.assertIn('--local-user "$actual_fingerprint"', repository_job)
+        self.assertGreaterEqual(repository_job.count("--pinentry-mode loopback"), 2)
+        self.assertGreaterEqual(repository_job.count("--passphrase-fd 0"), 2)
+        self.assertGreaterEqual(
+            repository_job.count('printf \'%s\' "$OFGS_PASSPHRASE" |'), 2
+        )
+        self.assertIn("trap 'rm -rf -- \"$GNUPGHOME\"' EXIT", repository_job)
+        self.assertNotIn("set -x", repository_job)
+        self.assertNotIn("OFGS_WEBSITE_PUBLISH_TOKEN", repository_job)
+
+    def test_rpm_repository_validates_package_metadata_and_signatures(self):
+        repository_job = self.job("rpm_repository", "rpm_acceptance")
+        for query in ("%{NAME}", "%{VERSION}-%{RELEASE}", "%{ARCH}"):
+            self.assertIn(query, repository_job)
+        self.assertIn("gpgv2 --homedir", repository_job)
+        self.assertIn("rpmkeys --dbpath", repository_job)
+        self.assertIn("--checksig", repository_job)
+        self.assertIn("digests signatures OK", repository_job)
+        self.assertIn("PRIVATE KEY", repository_job)
+        self.assertIn("! -type d ! -type f", repository_job)
+
+    def test_rpm_acceptance_uses_signed_repository_without_private_secrets(self):
+        acceptance_job = self.job("rpm_acceptance", "publish")
+        self.assertIn("needs: [validate, rpm_repository]", acceptance_job)
+        self.assertIn("container: rockylinux:9", acceptance_job)
+        self.assertIn("name: rpm-repository", acceptance_job)
+        self.assertIn("name: rpm-repository-public-key", acceptance_job)
+        self.assertIn("gpgcheck=1", acceptance_job)
+        self.assertIn("repo_gpgcheck=1", acceptance_job)
+        for bypass in ("gpgcheck=0", "repo_gpgcheck=0", "--nogpgcheck"):
+            self.assertNotIn(bypass, acceptance_job)
+        self.assertNotIn("OFGS_REPOSITORY_GPG_PRIVATE_KEY", acceptance_job)
+        self.assertNotIn("OFGS_REPOSITORY_GPG_PASSPHRASE", acceptance_job)
+        self.assertNotIn("OFGS_WEBSITE_PUBLISH_TOKEN", acceptance_job)
+        self.assertNotIn("createrepo_c", acceptance_job)
+        self.assertNotIn("rpmsign", acceptance_job)
+
+    def test_rpm_acceptance_installs_exact_repository_package_and_removes_it(self):
+        acceptance_job = self.job("rpm_acceptance", "publish")
+        makecache = acceptance_job.index("makecache")
+        installation = acceptance_job.index(
+            "repository-packages ofgs install ofgs"
+        )
+        self.assertLess(makecache, installation)
+        self.assertIn("--disablerepo='*' --enablerepo=ofgs repoquery", acceptance_job)
+        self.assertIn("--location ofgs", acceptance_job)
+        self.assertIn('"ofgs|${VERSION}-1.el9|noarch"', acceptance_job)
+        self.assertIn("repository-packages ofgs install ofgs", acceptance_job)
+        self.assertIn("--enablerepo=epel", acceptance_job)
+        self.assertIn("--enablerepo=ofgs", acceptance_job)
+        self.assertIn("$VERSION-1.el9", acceptance_job)
+        self.assertIn('test "$(command -v ofgs)" = /usr/bin/ofgs', acceptance_job)
+        self.assertIn("ofgs --help", acceptance_job)
+        self.assertIn("generation_status", acceptance_job)
+        self.assertIn("__pycache__", acceptance_job)
+        self.assertIn("'*.pyc'", acceptance_job)
+        self.assertIn("dnf remove -y ofgs", acceptance_job)
+        self.assertIn("test ! -e /usr/bin/ofgs", acceptance_job)
+        self.assertIn("test ! -e /usr/share/ofgs", acceptance_job)
+
+    def test_existing_publication_gates_are_unchanged_by_rpm_repository_jobs(self):
+        release_job = self.job("publish", "publish_apt")
+        apt_publish_job = self.last_job("publish_apt")
+        self.assertIn("needs: [validate, debian, rpm]", release_job)
+        self.assertIn(
+            "needs: [validate, debian, rpm, apt_repository, apt_acceptance]",
+            apt_publish_job,
+        )
+        for job in (release_job, apt_publish_job):
+            self.assertIn("needs.validate.outputs.publish == 'true'", job)
+            self.assertIn("github.event_name == 'push'", job)
+            self.assertIn("startsWith(github.ref, 'refs/tags/')", job)
+
 
 if __name__ == "__main__":
     unittest.main()
