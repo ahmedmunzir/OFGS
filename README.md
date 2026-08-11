@@ -18,35 +18,11 @@ Tested on:
 
 ### Package repositories (recommended)
 
-Repository setup is required only once.
-
-#### Debian 12
+OFGS supports Debian 12 and Rocky Linux 9. Repository setup is required only once.
 
 ```bash
-sudo apt update
-sudo apt install curl
-sudo curl -fsSL https://munzirahmed.dev/packages/keys/ofgs-repository.gpg -o /usr/share/keyrings/ofgs-repository.gpg
-echo 'deb [signed-by=/usr/share/keyrings/ofgs-repository.gpg] https://munzirahmed.dev/packages/apt stable main' | sudo tee /etc/apt/sources.list.d/ofgs.list > /dev/null
-sudo apt update
-sudo apt install ofgs
+curl -fsSL https://munzirahmed.dev/install-ofgs | sudo bash
 ```
-
-#### Rocky Linux 9
-
-```bash
-sudo dnf install epel-release
-sudo tee /etc/yum.repos.d/ofgs.repo > /dev/null <<'EOF'
-[ofgs]
-name=OFGS EL9
-baseurl=https://munzirahmed.dev/packages/rpm/el9/
-enabled=1
-gpgcheck=1
-repo_gpgcheck=1
-gpgkey=https://munzirahmed.dev/packages/keys/ofgs-repository.asc
-EOF
-sudo dnf install ofgs
-```
-
 ### Source installation
 
 Download or clone the repository and change into the OFGS directory:
