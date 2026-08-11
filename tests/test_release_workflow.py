@@ -198,6 +198,29 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("needs.validate.outputs.publish == 'true'", publish_job)
         self.assertIn("github.event_name == 'push'", publish_job)
 
+    def test_github_release_publication_explicitly_targets_ofgs_repository(self):
+        publish_job = self.job("publish", "publish_apt")
+        repository_option = '--repo "$GITHUB_REPOSITORY"'
+        self.assertEqual(publish_job.count(repository_option), 3)
+        self.assertIn(
+            'gh release view "$RELEASE_TAG" \\\n'
+            '            --repo "$GITHUB_REPOSITORY"',
+            publish_job,
+        )
+        self.assertIn(
+            'gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber \\\n'
+            '              --repo "$GITHUB_REPOSITORY"',
+            publish_job,
+        )
+        self.assertIn(
+            'gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"',
+            publish_job,
+        )
+        self.assertNotIn("actions/checkout", publish_job)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", publish_job)
+        self.assertIn("permissions:\n      contents: write", publish_job)
+        self.assertIn("--verify-tag --generate-notes --title", publish_job)
+
     def test_website_publication_has_complete_release_gating_and_concurrency(self):
         website_job = self.job("publish_apt", "publish_rpm")
         self.assertIn(
