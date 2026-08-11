@@ -3,7 +3,7 @@
 OFGS (OpenFOAM Gnuplot Suite) is a standalone command-line tool built around gnuplot for visualising OpenFOAM simulation data. It automatically detects supported datasets and provides commands for generating, viewing and live-monitoring simulation graphs.
 
 <!-- <p align="center"> -->
-  <img src="ofgs.png" alt="OFGS" width="720">
+  <img src="ofgs.png" alt="OFGS" width="800">
 <!-- </p> -->
 
 ## Prerequisites
