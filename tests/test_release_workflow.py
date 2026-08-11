@@ -346,7 +346,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         repository_job = self.job("rpm_repository", "rpm_acceptance")
         for query in ("%{NAME}", "%{VERSION}-%{RELEASE}", "%{ARCH}"):
             self.assertIn(query, repository_job)
-        self.assertIn("gpgv2 --homedir", repository_job)
+        binary_export = 'gpg2 --batch --export "$actual_fingerprint"'
+        armored_export = 'gpg2 --batch --armor --export "$actual_fingerprint"'
+        self.assertIn(binary_export, repository_job)
+        self.assertIn(armored_export, repository_job)
+        self.assertIn("rpm-public-key/ofgs-repository.gpg", repository_job)
+        self.assertIn("rpm-public-key/ofgs-repository.asc", repository_job)
+        self.assertIn("BEGIN PGP PUBLIC KEY BLOCK", repository_job)
+        self.assertIn(
+            'gpgv2 --homedir "$verification_home" --keyring "$gpgv_key"',
+            repository_job,
+        )
+        self.assertIn(
+            'rpm --dbpath "$rpm_database" --import "$rpm_key"', repository_job
+        )
+        self.assertLess(
+            repository_job.index('rpm --dbpath "$rpm_database" --import "$rpm_key"'),
+            repository_job.index("rpmkeys --dbpath"),
+        )
         self.assertIn("rpmkeys --dbpath", repository_job)
         self.assertIn("--checksig", repository_job)
         self.assertIn("digests signatures OK", repository_job)
@@ -359,6 +376,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("container: rockylinux:9", acceptance_job)
         self.assertIn("name: rpm-repository", acceptance_job)
         self.assertIn("name: rpm-repository-public-key", acceptance_job)
+        self.assertIn("rpm-public-key/ofgs-repository.asc", acceptance_job)
+        self.assertNotIn(
+            "gpgkey=file://${GITHUB_WORKSPACE}/rpm-public-key/ofgs-repository.gpg",
+            acceptance_job,
+        )
         self.assertIn("gpgcheck=1", acceptance_job)
         self.assertIn("repo_gpgcheck=1", acceptance_job)
         for bypass in ("gpgcheck=0", "repo_gpgcheck=0", "--nogpgcheck"):

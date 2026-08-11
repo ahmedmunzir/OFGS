@@ -579,7 +579,10 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/rpm-public-key"
           gpg2 --batch --export "$actual_fingerprint" > \
             "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+          gpg2 --batch --armor --export "$actual_fingerprint" > \
+            "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.asc"
           chmod 0644 "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+          chmod 0644 "$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.asc"
 
       - name: Validate signed RPM repository
         shell: bash
@@ -588,7 +591,8 @@ jobs:
           repository="$GITHUB_WORKSPACE/rpm"
           package="$repository/Packages/ofgs-${VERSION}-1.el9.noarch.rpm"
           repomd="$repository/repodata/repomd.xml"
-          public_key="$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+          gpgv_key="$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.gpg"
+          rpm_key="$GITHUB_WORKSPACE/rpm-public-key/ofgs-repository.asc"
 
           test -s "$package"
           test "$(rpm -qp --qf '%{NAME}\n' "$package")" = ofgs
@@ -597,7 +601,12 @@ jobs:
           test "$(rpm -qp --qf '%{ARCH}\n' "$package")" = noarch
           test -s "$repomd"
           test -s "${repomd}.asc"
-          test -s "$public_key"
+          test -s "$gpgv_key"
+          test -s "$rpm_key"
+          ! grep -a -Fq -- '-----BEGIN PGP PUBLIC KEY BLOCK-----' "$gpgv_key"
+          test "$(head -n 1 "$rpm_key")" = \
+            '-----BEGIN PGP PUBLIC KEY BLOCK-----'
+          grep -Fq -- '-----END PGP PUBLIC KEY BLOCK-----' "$rpm_key"
           test -n "$(find "$repository/repodata" -type f \
             ! -name repomd.xml ! -name repomd.xml.asc -print -quit)"
           test -z "$(find "$repository" -type f -empty -print -quit)"
@@ -615,11 +624,11 @@ jobs:
 
           verification_home="$(mktemp -d "$RUNNER_TEMP/ofgs-rpm-gpgv.XXXXXX")"
           chmod 700 "$verification_home"
-          gpgv2 --homedir "$verification_home" --keyring "$public_key" \
+          gpgv2 --homedir "$verification_home" --keyring "$gpgv_key" \
             "${repomd}.asc" "$repomd"
           rpm_database="$(mktemp -d "$RUNNER_TEMP/ofgs-rpmdb.XXXXXX")"
           rpm --dbpath "$rpm_database" --initdb
-          rpm --dbpath "$rpm_database" --import "$public_key"
+          rpm --dbpath "$rpm_database" --import "$rpm_key"
           signature_check="$(
             rpmkeys --dbpath "$rpm_database" --checksig "$package"
           )"
@@ -636,7 +645,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rpm-repository-public-key
-          path: rpm-public-key/ofgs-repository.gpg
+          path: rpm-public-key
           if-no-files-found: error
 
   rpm_acceptance:
@@ -674,7 +683,7 @@ jobs:
             'enabled=1' \
             'gpgcheck=1' \
             'repo_gpgcheck=1' \
-            "gpgkey=file://${GITHUB_WORKSPACE}/rpm-public-key/ofgs-repository.gpg" \
+            "gpgkey=file://${GITHUB_WORKSPACE}/rpm-public-key/ofgs-repository.asc" \
             > /etc/yum.repos.d/ofgs.repo
           dnf clean all
           dnf -y --disablerepo='*' --enablerepo=ofgs makecache
