@@ -1,0 +1,123 @@
+name: Publish OFGS installer
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - scripts/install_packages.sh
+      - .github/workflows/publish-installer.yml
+
+jobs:
+  publish_installer:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: ofgs-package-website-publication
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out reviewed OFGS source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: ofgs
+
+      - name: Validate canonical installer
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_installer="$GITHUB_WORKSPACE/ofgs/scripts/install_packages.sh"
+          test -f "$source_installer"
+          test ! -L "$source_installer"
+          test -s "$source_installer"
+          git -C "$GITHUB_WORKSPACE/ofgs" ls-files --error-unmatch \
+            scripts/install_packages.sh >/dev/null
+          test -z "$(git -C "$GITHUB_WORKSPACE/ofgs" status \
+            --porcelain --untracked-files=all)"
+          bash -n "$source_installer"
+          echo "sha256=$(sha256sum "$source_installer" | cut -d ' ' -f 1)" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Check out current website main
+        uses: actions/checkout@v4
+        with:
+          repository: ahmedmunzir/munzirahmed.dev
+          ref: main
+          token: ${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}
+          persist-credentials: false
+          path: website
+
+      - name: Replace only public installer and create scoped commit
+        id: update
+        shell: bash
+        working-directory: website
+        env:
+          SOURCE_INSTALLER: ${{ github.workspace }}/ofgs/scripts/install_packages.sh
+          EXPECTED_SHA256: ${{ steps.source.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -d packages/apt
+          test -d packages/rpm/el9
+          test -f packages/keys/ofgs-repository.asc
+          test -f packages/keys/ofgs-repository.gpg
+          test "$(sha256sum "$SOURCE_INSTALLER" | cut -d ' ' -f 1)" = \
+            "$EXPECTED_SHA256"
+
+          if [[ -e install-ofgs || -L install-ofgs ]]; then
+            test -f install-ofgs
+            test ! -L install-ofgs
+          fi
+          install -m 0644 "$SOURCE_INSTALLER" install-ofgs
+          cmp -s "$SOURCE_INSTALLER" install-ofgs
+          test "$(sha256sum install-ofgs | cut -d ' ' -f 1)" = \
+            "$EXPECTED_SHA256"
+
+          git add -- install-ofgs
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            . ':(exclude)install-ofgs')"
+          git diff --quiet -- packages
+          git diff --cached --quiet -- packages
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Public OFGS installer is already current."
+            exit 0
+          fi
+
+          test "$(git diff --cached --name-only)" = install-ofgs
+          git config user.name "OFGS release automation"
+          git config user.email "ofgs-release-automation@users.noreply.github.com"
+          git commit -m "Publish OFGS installer"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push public installer update
+        if: steps.update.outputs.changed == 'true'
+        shell: bash
+        working-directory: website
+        env:
+          OFGS_WEBSITE_TOKEN: ${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          askpass="$(mktemp "$RUNNER_TEMP/ofgs-git-askpass.XXXXXX")"
+          cleanup_credentials() {
+            unset OFGS_WEBSITE_TOKEN
+            rm -f -- "$askpass"
+          }
+          trap cleanup_credentials EXIT
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'case "$1" in' \
+            '  *Username*) printf "%s\n" "x-access-token" ;;' \
+            '  *Password*) printf "%s\n" "$OFGS_WEBSITE_TOKEN" ;;' \
+            '  *) exit 1 ;;' \
+            'esac' > "$askpass"
+          chmod 0700 "$askpass"
+          GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force \
+            GIT_TERMINAL_PROMPT=0 git push origin HEAD:main
+          cleanup_credentials
+          trap - EXIT
