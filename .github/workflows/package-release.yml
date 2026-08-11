@@ -784,7 +784,7 @@ jobs:
       github.event_name == 'push' &&
       startsWith(github.ref, 'refs/tags/')
     concurrency:
-      group: ofgs-apt-website-publication
+      group: ofgs-package-website-publication
       cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
@@ -886,6 +886,161 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Push website APT repository update
+        if: steps.update.outputs.changed == 'true'
+        shell: bash
+        working-directory: website
+        env:
+          OFGS_WEBSITE_TOKEN: ${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          askpass="$(mktemp "$RUNNER_TEMP/ofgs-git-askpass.XXXXXX")"
+          cleanup_credentials() {
+            unset OFGS_WEBSITE_TOKEN
+            rm -f -- "$askpass"
+          }
+          trap cleanup_credentials EXIT
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'case "$1" in' \
+            '  *Username*) printf "%s\n" "x-access-token" ;;' \
+            '  *Password*) printf "%s\n" "$OFGS_WEBSITE_TOKEN" ;;' \
+            '  *) exit 1 ;;' \
+            'esac' > "$askpass"
+          chmod 0700 "$askpass"
+          GIT_ASKPASS="$askpass" GIT_ASKPASS_REQUIRE=force \
+            GIT_TERMINAL_PROMPT=0 git push origin HEAD:main
+          cleanup_credentials
+          trap - EXIT
+
+  publish_rpm:
+    needs: [validate, debian, rpm, apt_repository, apt_acceptance, rpm_repository, rpm_acceptance]
+    if: >-
+      needs.validate.outputs.publish == 'true' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/')
+    concurrency:
+      group: ofgs-package-website-publication
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Install RPM artifact inspection tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Download accepted EL9 RPM repository
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-repository
+          path: ${{ runner.temp }}/rpm-repository
+
+      - name: Validate accepted EL9 RPM repository artifact
+        shell: bash
+        env:
+          RPM_ARTIFACT: ${{ runner.temp }}/rpm-repository
+        run: |
+          set -euo pipefail
+          package="$RPM_ARTIFACT/Packages/ofgs-${VERSION}-1.el9.noarch.rpm"
+          repomd="$RPM_ARTIFACT/repodata/repomd.xml"
+
+          test -s "$package"
+          test "$(rpm -qp --qf '%{NAME}\n' "$package")" = ofgs
+          test "$(rpm -qp --qf '%{VERSION}-%{RELEASE}\n' "$package")" = \
+            "$VERSION-1.el9"
+          test "$(rpm -qp --qf '%{ARCH}\n' "$package")" = noarch
+          test -s "$repomd"
+          test -s "${repomd}.asc"
+          mapfile -t top_level_entries < <(
+            find "$RPM_ARTIFACT" -mindepth 1 -maxdepth 1 \
+              -printf '%f\n' | LC_ALL=C sort
+          )
+          test "${#top_level_entries[@]}" -eq 2
+          test "${top_level_entries[0]}" = Packages
+          test "${top_level_entries[1]}" = repodata
+          test -n "$(find "$RPM_ARTIFACT/repodata" -type f \
+            ! -name repomd.xml ! -name repomd.xml.asc -print -quit)"
+          test -z "$(find "$RPM_ARTIFACT" -type f -empty -print -quit)"
+          test -z "$(find "$RPM_ARTIFACT" ! -type d ! -type f -print -quit)"
+          test -z "$(find "$RPM_ARTIFACT" -iname '*gnupg*' \
+            -o -iname 'private-keys-v1.d' \
+            -o -iname 'pubring.*' \
+            -o -iname 'trustdb.gpg' \
+            -o -name .git \
+            -o -name .github)"
+          mapfile -t packages < <(
+            find "$RPM_ARTIFACT/Packages" -mindepth 1 -maxdepth 1 \
+              -type f -printf '%f\n' | LC_ALL=C sort
+          )
+          test "${#packages[@]}" -eq 1
+          test "${packages[0]}" = "ofgs-${VERSION}-1.el9.noarch.rpm"
+          if grep -R -a -q -E \
+            'BEGIN (PGP )?PRIVATE KEY|OFGS_REPOSITORY_GPG_PRIVATE_KEY|OFGS_REPOSITORY_GPG_PASSPHRASE|OFGS_WEBSITE_PUBLISH_TOKEN' \
+            "$RPM_ARTIFACT"; then
+            echo "Unexpected sensitive material marker in RPM artifact." >&2
+            exit 1
+          fi
+
+      - name: Check out current website main
+        uses: actions/checkout@v4
+        with:
+          repository: ahmedmunzir/munzirahmed.dev
+          ref: main
+          token: ${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}
+          persist-credentials: false
+          path: website
+
+      - name: Replace only website EL9 RPM repository and create scoped commit
+        id: update
+        shell: bash
+        working-directory: website
+        env:
+          RPM_ARTIFACT: ${{ runner.temp }}/rpm-repository
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test -d packages/apt
+          test -f packages/keys/ofgs-repository.asc
+          test -f packages/keys/ofgs-repository.gpg
+          keys_before="$(sha256sum \
+            packages/keys/ofgs-repository.asc \
+            packages/keys/ofgs-repository.gpg)"
+
+          git rm -r --ignore-unmatch -- packages/rpm/el9
+          mkdir -p packages/rpm/el9
+          cp -a "$RPM_ARTIFACT"/. packages/rpm/el9/
+          diff -qr "$RPM_ARTIFACT" packages/rpm/el9
+          keys_after="$(sha256sum \
+            packages/keys/ofgs-repository.asc \
+            packages/keys/ofgs-repository.gpg)"
+          test "$keys_after" = "$keys_before"
+
+          git add --all -- packages/rpm/el9
+          test -z "$(git status --porcelain --untracked-files=all -- \
+            . ':(exclude)packages/rpm/el9' \
+            ':(exclude)packages/rpm/el9/**')"
+          git diff --quiet -- packages/apt packages/keys
+          git diff --cached --quiet -- packages/apt packages/keys
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Website EL9 RPM repository is already current."
+            exit 0
+          fi
+
+          while IFS= read -r changed_path; do
+            [[ "$changed_path" == packages/rpm/el9/* ]]
+          done < <(git diff --cached --name-only)
+
+          git config user.name "OFGS release automation"
+          git config user.email "ofgs-release-automation@users.noreply.github.com"
+          git commit -m "Publish OFGS ${VERSION} EL9 RPM repository"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Push website EL9 RPM repository update
         if: steps.update.outputs.changed == 'true'
         shell: bash
         working-directory: website

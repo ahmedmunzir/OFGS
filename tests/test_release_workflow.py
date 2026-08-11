@@ -199,7 +199,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("github.event_name == 'push'", publish_job)
 
     def test_website_publication_has_complete_release_gating_and_concurrency(self):
-        website_job = self.last_job("publish_apt")
+        website_job = self.job("publish_apt", "publish_rpm")
         self.assertIn(
             "needs: [validate, debian, rpm, apt_repository, apt_acceptance]",
             website_job,
@@ -207,12 +207,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("needs.validate.outputs.publish == 'true'", website_job)
         self.assertIn("github.event_name == 'push'", website_job)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", website_job)
-        self.assertIn("group: ofgs-apt-website-publication", website_job)
+        self.assertIn("group: ofgs-package-website-publication", website_job)
         self.assertIn("cancel-in-progress: false", website_job)
         self.assertIn("permissions:\n      contents: read", website_job)
 
     def test_website_publication_uses_only_restricted_pat_for_target_repo(self):
-        website_job = self.last_job("publish_apt")
+        website_job = self.job("publish_apt", "publish_rpm")
         pat_expression = "${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}"
         self.assertEqual(website_job.count(pat_expression), 2)
         self.assertIn("repository: ahmedmunzir/munzirahmed.dev", website_job)
@@ -234,7 +234,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("https://x-access-token", website_job)
 
     def test_website_publication_transfers_only_validated_apt_artifact(self):
-        website_job = self.last_job("publish_apt")
+        website_job = self.job("publish_apt", "publish_rpm")
         self.assertIn("name: apt-repository", website_job)
         self.assertIn("actions/download-artifact@v4", website_job)
         self.assertNotIn("dpkg-scanpackages", website_job)
@@ -256,7 +256,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("PRIVATE KEY", website_job)
 
     def test_website_update_is_scoped_and_preserves_keys_and_other_content(self):
-        website_job = self.last_job("publish_apt")
+        website_job = self.job("publish_apt", "publish_rpm")
         self.assertIn("git rm -r --ignore-unmatch -- packages/apt", website_job)
         self.assertIn('cp -a "$APT_ARTIFACT"/. packages/apt/', website_job)
         self.assertIn('diff -qr "$APT_ARTIFACT" packages/apt', website_job)
@@ -268,7 +268,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('[[ "$changed_path" == packages/apt/* ]]', website_job)
 
     def test_website_no_change_path_skips_commit_and_push(self):
-        website_job = self.last_job("publish_apt")
+        website_job = self.job("publish_apt", "publish_rpm")
         quiet = website_job.index("if git diff --cached --quiet; then")
         commit = website_job.index("git commit -m")
         self.assertLess(quiet, commit)
@@ -416,16 +416,117 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_existing_publication_gates_are_unchanged_by_rpm_repository_jobs(self):
         release_job = self.job("publish", "publish_apt")
-        apt_publish_job = self.last_job("publish_apt")
+        apt_publish_job = self.job("publish_apt", "publish_rpm")
+        rpm_publish_job = self.last_job("publish_rpm")
         self.assertIn("needs: [validate, debian, rpm]", release_job)
         self.assertIn(
             "needs: [validate, debian, rpm, apt_repository, apt_acceptance]",
             apt_publish_job,
         )
-        for job in (release_job, apt_publish_job):
+        for job in (release_job, apt_publish_job, rpm_publish_job):
             self.assertIn("needs.validate.outputs.publish == 'true'", job)
             self.assertIn("github.event_name == 'push'", job)
             self.assertIn("startsWith(github.ref, 'refs/tags/')", job)
+
+    def test_rpm_website_publication_is_fully_gated_after_acceptance(self):
+        website_job = self.last_job("publish_rpm")
+        self.assertIn(
+            "needs: [validate, debian, rpm, apt_repository, apt_acceptance, "
+            "rpm_repository, rpm_acceptance]",
+            website_job,
+        )
+        self.assertIn("needs.validate.outputs.publish == 'true'", website_job)
+        self.assertIn("github.event_name == 'push'", website_job)
+        self.assertIn("startsWith(github.ref, 'refs/tags/')", website_job)
+        self.assertIn("permissions:\n      contents: read", website_job)
+
+    def test_rpm_website_publication_transfers_only_accepted_artifact(self):
+        website_job = self.last_job("publish_rpm")
+        self.assertIn("name: rpm-repository", website_job)
+        self.assertIn("actions/download-artifact@v4", website_job)
+        self.assertLess(
+            website_job.index("Validate accepted EL9 RPM repository artifact"),
+            website_job.index("Check out current website main"),
+        )
+        for forbidden in ("rpmbuild", "rpmsign", "createrepo_c", "gpg2"):
+            self.assertNotIn(forbidden, website_job)
+        self.assertNotIn("--detach-sign", website_job)
+        self.assertNotIn("--addsign", website_job)
+
+    def test_rpm_website_artifact_validation_is_defensive(self):
+        website_job = self.last_job("publish_rpm")
+        for expected in (
+            'Packages/ofgs-${VERSION}-1.el9.noarch.rpm',
+            "repodata/repomd.xml",
+            "${repomd}.asc",
+            "%{NAME}",
+            "%{VERSION}-%{RELEASE}",
+            "%{ARCH}",
+            "! -type d ! -type f",
+            "PRIVATE KEY",
+            "private-keys-v1.d",
+            "top_level_entries",
+            "= Packages",
+            "= repodata",
+            "-name .git",
+        ):
+            self.assertIn(expected, website_job)
+        self.assertIn("find \"$RPM_ARTIFACT/repodata\" -type f", website_job)
+        self.assertIn("-type f -empty", website_job)
+
+    def test_rpm_website_update_is_el9_scoped_and_preserves_other_content(self):
+        website_job = self.last_job("publish_rpm")
+        self.assertIn("repository: ahmedmunzir/munzirahmed.dev", website_job)
+        self.assertIn("ref: main", website_job)
+        self.assertIn("persist-credentials: false", website_job)
+        self.assertIn("git rm -r --ignore-unmatch -- packages/rpm/el9", website_job)
+        self.assertIn('cp -a "$RPM_ARTIFACT"/. packages/rpm/el9/', website_job)
+        self.assertIn('diff -qr "$RPM_ARTIFACT" packages/rpm/el9', website_job)
+        self.assertIn("git add --all -- packages/rpm/el9", website_job)
+        self.assertNotIn("git add -A", website_job)
+        self.assertNotIn("git add .", website_job)
+        self.assertNotIn("git rm -r --ignore-unmatch -- packages/apt", website_job)
+        self.assertNotIn('cp -a "$RPM_ARTIFACT"/. packages/apt/', website_job)
+        self.assertIn("packages/keys/ofgs-repository.asc", website_job)
+        self.assertIn("packages/keys/ofgs-repository.gpg", website_job)
+        self.assertIn('test "$keys_after" = "$keys_before"', website_job)
+        self.assertIn("git diff --quiet -- packages/apt packages/keys", website_job)
+        self.assertIn("':(exclude)packages/rpm/el9/**'", website_job)
+        self.assertIn('[[ "$changed_path" == packages/rpm/el9/* ]]', website_job)
+
+    def test_rpm_website_publication_uses_pat_without_signing_secrets(self):
+        website_job = self.last_job("publish_rpm")
+        pat_expression = "${{ secrets.OFGS_WEBSITE_PUBLISH_TOKEN }}"
+        self.assertEqual(website_job.count(pat_expression), 2)
+        self.assertNotIn(
+            "${{ secrets.OFGS_REPOSITORY_GPG_PRIVATE_KEY }}", website_job
+        )
+        self.assertNotIn(
+            "${{ secrets.OFGS_REPOSITORY_GPG_PASSPHRASE }}", website_job
+        )
+        self.assertNotIn(
+            "${{ vars.OFGS_REPOSITORY_GPG_FINGERPRINT }}", website_job
+        )
+        self.assertIn("GIT_ASKPASS", website_job)
+        self.assertIn("persist-credentials: false", website_job)
+        self.assertIn("git push origin HEAD:main", website_job)
+        self.assertNotIn("--force", website_job)
+        self.assertNotIn("set -x", website_job)
+
+    def test_rpm_website_no_change_and_shared_concurrency_are_safe(self):
+        apt_job = self.job("publish_apt", "publish_rpm")
+        rpm_job = self.last_job("publish_rpm")
+        concurrency = "group: ofgs-package-website-publication"
+        self.assertIn(concurrency, apt_job)
+        self.assertIn(concurrency, rpm_job)
+        self.assertIn("cancel-in-progress: false", apt_job)
+        self.assertIn("cancel-in-progress: false", rpm_job)
+        quiet = rpm_job.index("if git diff --cached --quiet; then")
+        commit = rpm_job.index("git commit -m")
+        self.assertLess(quiet, commit)
+        self.assertIn('echo "changed=false" >> "$GITHUB_OUTPUT"', rpm_job)
+        self.assertIn("exit 0", rpm_job[quiet:commit])
+        self.assertIn("if: steps.update.outputs.changed == 'true'", rpm_job)
 
 
 if __name__ == "__main__":
