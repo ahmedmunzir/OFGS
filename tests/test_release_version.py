@@ -7,6 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_ROOT / "scripts" / "release_version.py"
 README = PROJECT_ROOT / "README.md"
+CHANGELOG = PROJECT_ROOT / "CHANGELOG.md"
 
 
 def run_script(*arguments):
@@ -18,12 +19,18 @@ def run_script(*arguments):
 
 
 class ReleaseVersionTests(unittest.TestCase):
-    def test_tracked_readme_presents_v230_as_current_release(self):
+    def test_tracked_docs_present_v230_as_current_release(self):
         readme = README.read_text()
         self.assertTrue(
             readme.startswith("# OFGS (OpenFOAM Gnuplot Suite) v2.3.0\n")
         )
-        changelog = readme.split("# Changelog\n", 1)[1]
+        self.assertNotIn("# Changelog", readme)
+        changelog = CHANGELOG.read_text()
+        self.assertTrue(changelog.startswith("# Changelog\n\n<details open>\n"))
+        self.assertIn(
+            "<details>\n<summary><strong>Previous Releases</strong></summary>",
+            changelog,
+        )
         current = changelog.index("<strong>v2.3.0</strong>")
         previous = changelog.index("<strong>Previous Releases</strong>")
         v221 = changelog.index("<strong>v2.2.1</strong>")
