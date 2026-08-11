@@ -1,4 +1,4 @@
-# OFGS (OpenFOAM Gnuplot Suite) v2.2.1
+# OFGS (OpenFOAM Gnuplot Suite) v2.3.0
 
 OFGS (OpenFOAM Gnuplot Suite) is a standalone command-line tool built around gnuplot for visualising OpenFOAM simulation data. It automatically detects supported datasets and provides commands for generating, viewing and live-monitoring simulation graphs.
 
@@ -125,6 +125,20 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 # Changelog
 
 <details>
+<summary><strong>v2.3.0</strong></summary>
+
+### Added
+
+- Added signed APT repository support for Debian-family package installation.
+- Added signed DNF/RPM repository support for EL9, acceptance-tested on Rocky Linux 9.
+- Added cryptographic verification of package and repository metadata signatures.
+- Added automated package acceptance testing in clean Debian 12 and Rocky Linux 9 environments.
+- Added release-tag-only automation for publishing package artifacts and signed APT and EL9 RPM repositories.
+
+</details>
+<details>
+<summary><strong>Previous Releases</strong></summary><br>
+<details>
 <summary><strong>v2.2.1</strong></summary>
 
 ### Improved
@@ -141,8 +155,6 @@ For collaborative cases, ensure the case uses an appropriate shared group with s
 
 
 </details>
-<details>
-<summary><strong>Previous Releases</strong></summary><br>
 <details>
 <summary><strong>v2.2.0</strong></summary>
 
