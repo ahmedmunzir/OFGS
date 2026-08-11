@@ -315,12 +315,30 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('--define "_gpg_name $actual_fingerprint"', repository_job)
         self.assertIn('--define "_gpg_path $GNUPGHOME"', repository_job)
         self.assertIn('--local-user "$actual_fingerprint"', repository_job)
-        self.assertGreaterEqual(repository_job.count("--pinentry-mode loopback"), 2)
-        self.assertGreaterEqual(repository_job.count("--passphrase-fd 0"), 2)
+        self.assertIn("allow-preset-passphrase", repository_job)
+        self.assertIn("--with-keygrip", repository_job)
+        self.assertIn("/usr/libexec/gpg-preset-passphrase", repository_job)
+        self.assertIn('"$preset_passphrase" --preset "$keygrip"', repository_job)
+        self.assertLess(
+            repository_job.index('"$preset_passphrase" --preset "$keygrip"'),
+            repository_job.index("rpmsign --addsign"),
+        )
+        rpm_signing = repository_job[
+            repository_job.index("rpmsign --addsign") :
+            repository_job.index('createrepo_c "$GITHUB_WORKSPACE/rpm"')
+        ]
+        self.assertIn("--batch --no-tty", rpm_signing)
+        self.assertNotIn("OFGS_PASSPHRASE", rpm_signing)
+        self.assertNotIn("--passphrase", rpm_signing)
+        self.assertNotIn("--pinentry-mode", rpm_signing)
+        self.assertIn("gpgconf --homedir", repository_job)
+        self.assertIn("--kill gpg-agent", repository_job)
+        self.assertIn("trap cleanup_signing_home EXIT", repository_job)
+        self.assertIn('rm -rf -- "$GNUPGHOME"', repository_job)
         self.assertGreaterEqual(
             repository_job.count('printf \'%s\' "$OFGS_PASSPHRASE" |'), 2
         )
-        self.assertIn("trap 'rm -rf -- \"$GNUPGHOME\"' EXIT", repository_job)
+        self.assertNotIn("--passphrase $OFGS_PASSPHRASE", repository_job)
         self.assertNotIn("set -x", repository_job)
         self.assertNotIn("OFGS_WEBSITE_PUBLISH_TOKEN", repository_job)
 

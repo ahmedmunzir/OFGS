@@ -506,7 +506,14 @@ jobs:
           GNUPGHOME="$(mktemp -d "$RUNNER_TEMP/ofgs-rpm-gnupg.XXXXXX")"
           export GNUPGHOME
           chmod 700 "$GNUPGHOME"
-          trap 'rm -rf -- "$GNUPGHOME"' EXIT
+          printf '%s\n' allow-preset-passphrase > "$GNUPGHOME/gpg-agent.conf"
+          chmod 0600 "$GNUPGHOME/gpg-agent.conf"
+          cleanup_signing_home() {
+            gpgconf --homedir "$GNUPGHOME" --kill gpg-agent \
+              >/dev/null 2>&1 || true
+            rm -rf -- "$GNUPGHOME"
+          }
+          trap cleanup_signing_home EXIT
 
           printf '%s' "$OFGS_PRIVATE_KEY" | gpg2 --batch --quiet --import
           unset OFGS_PRIVATE_KEY
@@ -532,20 +539,33 @@ jobs:
           actual_fingerprint="${imported_fingerprints[0]}"
           test "$actual_fingerprint" = "$expected_fingerprint"
 
+          mapfile -t secret_keygrips < <(
+            gpg2 --batch --with-colons --with-keygrip \
+              --list-secret-keys "$actual_fingerprint" \
+              | awk -F: '$1 == "grp" { print toupper($10) }'
+          )
+          test "${#secret_keygrips[@]}" -ge 1
+          preset_passphrase=/usr/libexec/gpg-preset-passphrase
+          test -x "$preset_passphrase"
+          for keygrip in "${secret_keygrips[@]}"; do
+            [[ "$keygrip" =~ ^[0-9A-F]{40}$ ]]
+            printf '%s' "$OFGS_PASSPHRASE" | \
+              "$preset_passphrase" --preset "$keygrip"
+          done
+
           package="$GITHUB_WORKSPACE/rpm/Packages/ofgs-${VERSION}-1.el9.noarch.rpm"
           sign_command="$(rpm \
-            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-fd 0" \
+            --define "_gpg_sign_cmd_extra_args --batch --no-tty" \
             --eval '%{__gpg_sign_cmd}')"
-          grep -Fq -- '--pinentry-mode loopback' <<< "$sign_command"
-          grep -Fq -- '--passphrase-fd 0' <<< "$sign_command"
-          printf '%s' "$OFGS_PASSPHRASE" | \
-            rpmsign --addsign \
-              --define "_signature gpg" \
-              --define "_gpg_name $actual_fingerprint" \
-              --define "_gpg_path $GNUPGHOME" \
-              --define "_gpg_digest_algo sha256" \
-              --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback --passphrase-fd 0" \
-              "$package"
+          grep -Fq -- '--batch' <<< "$sign_command"
+          grep -Fq -- '--no-tty' <<< "$sign_command"
+          rpmsign --addsign \
+            --define "_signature gpg" \
+            --define "_gpg_name $actual_fingerprint" \
+            --define "_gpg_path $GNUPGHOME" \
+            --define "_gpg_digest_algo sha256" \
+            --define "_gpg_sign_cmd_extra_args --batch --no-tty" \
+            "$package"
 
           createrepo_c "$GITHUB_WORKSPACE/rpm"
           repomd="$GITHUB_WORKSPACE/rpm/repodata/repomd.xml"
