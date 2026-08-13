@@ -20,6 +20,7 @@ Requires:       coreutils
 Requires:       gnuplot >= 5.4
 Requires:       python3 >= 3.9
 Requires:       sed
+Recommends:     bash-completion
 
 %description
 OFGS discovers supported OpenFOAM post-processing datasets and generates
@@ -44,6 +45,7 @@ python3 -B -m unittest discover -s tests -v
 %doc README.md
 %{_bindir}/ofgs
 %{_datadir}/ofgs/
+%{_datadir}/bash-completion/completions/ofgs
 %{_mandir}/man1/ofgs.1*
 
 %changelog

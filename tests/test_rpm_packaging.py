@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC_PATH = PROJECT_ROOT / "packaging" / "rpm" / "ofgs.spec"
 EXPECTED_RUNTIME_FILES = {
     Path("usr/bin/ofgs"),
+    Path("usr/share/bash-completion/completions/ofgs"),
     Path("usr/share/ofgs/ofgs_generate.py"),
     Path("usr/share/ofgs/core/__init__.py"),
     Path("usr/share/ofgs/core/dataset_parser.py"),
@@ -77,6 +78,7 @@ class RpmPackagingTests(unittest.TestCase):
     def test_build_and_runtime_dependencies(self):
         build_requires = spec_fields(self.spec, "BuildRequires")
         requires = spec_fields(self.spec, "Requires")
+        recommends = spec_fields(self.spec, "Recommends")
 
         for dependency in ("bash", "coreutils", "make", "python3 >= 3.9"):
             self.assertIn(dependency, build_requires)
@@ -92,6 +94,7 @@ class RpmPackagingTests(unittest.TestCase):
         dependency_text = "\n".join(requires).lower()
         self.assertNotIn("gnuplot-qt", dependency_text)
         self.assertNotIn("openfoam", dependency_text)
+        self.assertEqual(recommends, ["bash-completion"])
 
     def test_install_reuses_shared_staging_architecture(self):
         install_section = spec_section(self.spec, "install", "check")
@@ -116,6 +119,9 @@ class RpmPackagingTests(unittest.TestCase):
 
         self.assertIn("%{_bindir}/ofgs", files_section)
         self.assertIn("%{_datadir}/ofgs/", files_section)
+        self.assertIn(
+            "%{_datadir}/bash-completion/completions/ofgs", files_section
+        )
         self.assertIn("%{_mandir}/man1/ofgs.1*", files_section)
         self.assertIn("%license LICENSE", files_section)
         self.assertIn("%doc README.md", files_section)
@@ -180,6 +186,10 @@ class RpmPackagingTests(unittest.TestCase):
                 (root / "usr/share/ofgs/ofgs_generate.py")
                 .read_text()
                 .startswith("#!")
+            )
+            self.assertIn(
+                "# OFGS completion owner: package",
+                (root / "usr/share/bash-completion/completions/ofgs").read_text(),
             )
 
     def test_man_page_source_and_debian_packaging_remain_present(self):

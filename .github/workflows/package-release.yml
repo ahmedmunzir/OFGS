@@ -67,7 +67,7 @@ jobs:
           pycache_root="$(mktemp -d)"
           PYTHONPYCACHEPREFIX="$pycache_root" python3 -m compileall -q \
             core ofgs_generate.py scripts tests
-          bash -n install.sh uninstall.sh wrapper/ofgs
+          bash -n install.sh uninstall.sh wrapper/ofgs completions/ofgs.bash
           git diff --check
           test -z "$(git status --short --untracked-files=no)"
 
@@ -137,6 +137,9 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
           test "$(command -v ofgs)" = /usr/bin/ofgs
           grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          test -f /usr/share/bash-completion/completions/ofgs
+          bash --noprofile --norc -c \
+            'source /usr/share/bash-completion/completions/ofgs; complete -p ofgs'
           ofgs --help
           invalid_case="$(mktemp -d)"
           set +e
@@ -149,6 +152,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get remove -y ofgs
           test ! -e /usr/bin/ofgs
           test ! -e /usr/share/ofgs
+          test ! -e /usr/share/bash-completion/completions/ofgs
 
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
@@ -348,6 +352,7 @@ jobs:
           test "$(command -v ofgs)" = /usr/bin/ofgs
           test -d /usr/share/ofgs
           grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          test -f /usr/share/bash-completion/completions/ofgs
           ofgs --help
           invalid_case="$(mktemp -d)"
           set +e
@@ -360,6 +365,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get remove -y ofgs
           test ! -e /usr/bin/ofgs
           test ! -e /usr/share/ofgs
+          test ! -e /usr/share/bash-completion/completions/ofgs
 
   rpm:
     needs: validate
@@ -440,6 +446,9 @@ jobs:
           dnf install -y "$rpm"
           test "$(command -v ofgs)" = /usr/bin/ofgs
           grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          test -f /usr/share/bash-completion/completions/ofgs
+          bash --noprofile --norc -c \
+            'source /usr/share/bash-completion/completions/ofgs; complete -p ofgs'
           ofgs --help
           invalid_case="$(mktemp -d)"
           set +e
@@ -452,6 +461,7 @@ jobs:
           dnf remove -y ofgs
           test ! -e /usr/bin/ofgs
           test ! -e /usr/share/ofgs
+          test ! -e /usr/share/bash-completion/completions/ofgs
 
       - name: Upload RPM package
         uses: actions/upload-artifact@v4
@@ -716,6 +726,7 @@ jobs:
           test "$(command -v ofgs)" = /usr/bin/ofgs
           test -d /usr/share/ofgs
           grep -Fq /usr/share/ofgs /usr/bin/ofgs
+          test -f /usr/share/bash-completion/completions/ofgs
           ofgs --help
           invalid_case="$(mktemp -d)"
           set +e
@@ -728,6 +739,7 @@ jobs:
           dnf remove -y ofgs
           test ! -e /usr/bin/ofgs
           test ! -e /usr/share/ofgs
+          test ! -e /usr/share/bash-completion/completions/ofgs
 
   publish:
     needs: [validate, debian, rpm]

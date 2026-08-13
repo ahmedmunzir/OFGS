@@ -5,6 +5,90 @@ set -u
 
 OFGS_INSTALL_DIR=@OFGS_INSTALL_DIR@
 
+OFGS_COMMAND_GENERATE=generate
+OFGS_COMMAND_MONITOR=monitor
+OFGS_COMMAND_GRAPH=graph
+OFGS_COMMAND_LIST=list
+OFGS_COMMAND_CLEAN=clean
+OFGS_COMMAND_DOCTOR=doctor
+OFGS_COMMAND_HELP=help
+OFGS_PUBLIC_COMMANDS=(
+    "$OFGS_COMMAND_GENERATE"
+    "$OFGS_COMMAND_MONITOR"
+    "$OFGS_COMMAND_GRAPH"
+    "$OFGS_COMMAND_LIST"
+    "$OFGS_COMMAND_CLEAN"
+    "$OFGS_COMMAND_DOCTOR"
+    "$OFGS_COMMAND_HELP"
+)
+OFGS_OPTION_HELP_SHORT=-h
+OFGS_OPTION_HELP_LONG=--help
+OFGS_OPTION_LIVE=--live
+OFGS_OPTION_FORCE=--force
+
+complete_from() {
+    local prefix="$1"
+    shift
+    local candidate
+    for candidate in "$@"; do
+        if [[ "$candidate" == "$prefix"* ]]; then
+            printf '%s\n' "$candidate"
+        fi
+    done
+}
+
+complete_ofgs_arguments() {
+    local argument_count="$#"
+    local current="${!argument_count}"
+    local command="${1:-}"
+    local graph_selection
+
+    if (( argument_count == 1 )); then
+        if [[ "$current" == -* ]]; then
+            complete_from "$current" \
+                "$OFGS_OPTION_HELP_SHORT" "$OFGS_OPTION_HELP_LONG"
+        else
+            complete_from "$current" "${OFGS_PUBLIC_COMMANDS[@]}"
+        fi
+        return
+    fi
+
+    case "$command" in
+        "$OFGS_COMMAND_HELP")
+            if (( argument_count == 2 )); then
+                complete_from "$current" "${OFGS_PUBLIC_COMMANDS[@]}"
+            fi
+            ;;
+        "$OFGS_COMMAND_MONITOR")
+            if (( argument_count == 2 )); then
+                complete_from "$current" "$OFGS_OPTION_LIVE"
+            fi
+            ;;
+        "$OFGS_COMMAND_CLEAN")
+            if (( argument_count == 2 )); then
+                complete_from "$current" "$OFGS_OPTION_FORCE"
+            fi
+            ;;
+        "$OFGS_COMMAND_GRAPH")
+            if (( argument_count >= 3 )); then
+                graph_selection="${*:2:$((argument_count - 2))}"
+                graph_selection="${graph_selection//[[:space:]]/}"
+                if [[ "$graph_selection" =~ ^[0-9]+(,[0-9]+)*$ ]] \
+                    && { [[ "$current" == -* ]] || [[ -z "$current" ]]; }; then
+                    complete_from "$current" "$OFGS_OPTION_LIVE"
+                fi
+            fi
+            ;;
+    esac
+}
+
+if [[ "${_OFGS_COMPLETE:-}" == bash ]]; then
+    if (( $# > 0 )); then
+        complete_ofgs_arguments "$@"
+    fi
+    exit 0
+fi
+
 resolve_gnuplot() {
     local candidate
     candidate="$(command -v gnuplot 2>/dev/null)" || return 1
@@ -306,13 +390,13 @@ EOF
 
 show_command_help() {
     case "$1" in
-        generate) show_generate_help ;;
-        monitor) show_monitor_help ;;
-        graph) show_graph_help ;;
-        list) show_list_help ;;
-        clean) show_clean_help ;;
-        doctor) show_doctor_help ;;
-        help) show_main_help ;;
+        "$OFGS_COMMAND_GENERATE") show_generate_help ;;
+        "$OFGS_COMMAND_MONITOR") show_monitor_help ;;
+        "$OFGS_COMMAND_GRAPH") show_graph_help ;;
+        "$OFGS_COMMAND_LIST") show_list_help ;;
+        "$OFGS_COMMAND_CLEAN") show_clean_help ;;
+        "$OFGS_COMMAND_DOCTOR") show_doctor_help ;;
+        "$OFGS_COMMAND_HELP") show_main_help ;;
         *)
             printf "Error: unknown help topic '%s'.\n\n" "$1" >&2
             show_main_help
@@ -601,7 +685,7 @@ run_live_session() {
 }
 
 case "${1:-}" in
-    help)
+    "$OFGS_COMMAND_HELP")
         if [[ "$#" -eq 1 ]]; then
             show_main_help
         elif [[ "$#" -eq 2 ]]; then
@@ -613,7 +697,7 @@ case "${1:-}" in
         fi
         ;;
 
-    --help|-h)
+    "$OFGS_OPTION_HELP_LONG"|"$OFGS_OPTION_HELP_SHORT")
         if [[ "$#" -ne 1 ]]; then
             echo "Usage: ofgs help [command]" >&2
             exit 2
@@ -621,7 +705,7 @@ case "${1:-}" in
         show_main_help
         ;;
 
-    generate)
+    "$OFGS_COMMAND_GENERATE")
         if [[ "$#" -ne 1 ]]; then
             echo "Usage: ofgs generate" >&2
             exit 2
@@ -633,9 +717,9 @@ case "${1:-}" in
         exec python3 -B "$OFGS_INSTALL_DIR/ofgs_generate.py"
         ;;
 
-    clean)
+    "$OFGS_COMMAND_CLEAN")
         clean_force=false
-        if [[ "$#" -eq 2 && "$2" == "--force" ]]; then
+        if [[ "$#" -eq 2 && "$2" == "$OFGS_OPTION_FORCE" ]]; then
             clean_force=true
         elif [[ "$#" -ne 1 ]]; then
             echo "Usage: ofgs clean [--force]" >&2
@@ -645,7 +729,7 @@ case "${1:-}" in
         exit $?
         ;;
 
-    doctor)
+    "$OFGS_COMMAND_DOCTOR")
         if [[ "$#" -ne 1 ]]; then
             echo "Usage: ofgs doctor" >&2
             exit 2
@@ -654,8 +738,8 @@ case "${1:-}" in
         exit $?
         ;;
 
-    monitor)
-        if [[ "$#" -eq 2 && "$2" == "--live" ]]; then
+    "$OFGS_COMMAND_MONITOR")
+        if [[ "$#" -eq 2 && "$2" == "$OFGS_OPTION_LIVE" ]]; then
             run_generator_quietly || exit $?
             if [[ ! -f monitor.gp ]]; then
                 monitor_not_found
@@ -675,12 +759,12 @@ case "${1:-}" in
         run_real_gnuplot monitor.gp
         ;;
 
-    graph)
+    "$OFGS_COMMAND_GRAPH")
         graph_arguments=("${@:2}")
         live_mode=false
         graph_argument_count="${#graph_arguments[@]}"
         if (( graph_argument_count > 0 )) \
-            && [[ "${graph_arguments[$((graph_argument_count - 1))]}" == "--live" ]]; then
+            && [[ "${graph_arguments[$((graph_argument_count - 1))]}" == "$OFGS_OPTION_LIVE" ]]; then
             live_mode=true
             unset "graph_arguments[$((graph_argument_count - 1))]"
         fi
@@ -736,7 +820,7 @@ case "${1:-}" in
         run_multi_graph
         ;;
 
-    list)
+    "$OFGS_COMMAND_LIST")
         if [[ "$#" -ne 1 ]]; then
             echo "Usage: ofgs list" >&2
             exit 2

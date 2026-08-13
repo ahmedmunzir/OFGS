@@ -47,6 +47,12 @@ def relocated_manual_script(source, root, project_root=None):
             1,
         )
         .replace(
+            'completion_target="/usr/share/bash-completion/completions/ofgs"',
+            'completion_target="'
+            f'{root / "usr/share/bash-completion/completions/ofgs"}"',
+            1,
+        )
+        .replace(
             'legacy_wrapper_target="/usr/local/bin/gnuplot"',
             f'legacy_wrapper_target="{bin_dir / "gnuplot"}"',
             1,
@@ -54,9 +60,13 @@ def relocated_manual_script(source, root, project_root=None):
     )
     if source.name == "install.sh":
         text = text.replace(
-            'python3 "$project_root/scripts/install_runtime.py" --prefix /usr/local',
-            'python3 "$project_root/scripts/install_runtime.py" '
-            f'--prefix /usr/local --destdir "{root}"',
+            'python3 "$project_root/scripts/install_runtime.py" \\\n'
+            '    --prefix /usr/local \\\n'
+            '    --bash-completion-dir /usr/share/bash-completion/completions',
+            'python3 "$project_root/scripts/install_runtime.py" \\\n'
+            '    --prefix /usr/local \\\n'
+            '    --bash-completion-dir /usr/share/bash-completion/completions '
+            f'--destdir "{root}"',
             1,
         )
     return text
@@ -82,8 +92,12 @@ class InstallationTests(unittest.TestCase):
         staged_prefix = root / prefix.relative_to("/")
         wrapper = staged_prefix / "bin" / "ofgs"
         runtime = staged_prefix / "share" / "ofgs"
+        completion = (
+            staged_prefix / "share" / "bash-completion" / "completions" / "ofgs"
+        )
 
         self.assertTrue(wrapper.is_file())
+        self.assertTrue(completion.is_file())
         self.assertTrue((runtime / "ofgs_generate.py").is_file())
         self.assertEqual(
             {path.name for path in runtime.iterdir()}, {"ofgs_generate.py", "core"}
@@ -104,6 +118,12 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(file_mode(runtime), 0o755)
         self.assertEqual(file_mode(runtime / "core"), 0o755)
         self.assertEqual(file_mode(runtime / "ofgs_generate.py"), 0o644)
+        self.assertEqual(file_mode(completion), 0o644)
+        self.assertIn("# OFGS bash completion", completion.read_text())
+        expected_owner = "package" if prefix == Path("/usr") else "source"
+        self.assertIn(
+            f"# OFGS completion owner: {expected_owner}", completion.read_text()
+        )
         self.assertFalse(
             (runtime / "ofgs_generate.py").read_text().startswith("#!")
         )
@@ -196,6 +216,9 @@ class InstallationTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue((install_dir / "ofgs_generate.py").is_file())
+            self.assertTrue(
+                (root / "usr/share/bash-completion/completions/ofgs").is_file()
+            )
             self.assertFalse(legacy_generator.exists())
             self.assertFalse(legacy_wrapper.exists())
             wrapper_text = (bin_dir / "ofgs").read_text()
@@ -208,6 +231,10 @@ class InstallationTests(unittest.TestCase):
 
         self.assertIn("--prefix /usr/local", install_text)
         self.assertNotIn("--prefix /usr ", install_text)
+        self.assertIn(
+            "--bash-completion-dir /usr/share/bash-completion/completions",
+            install_text,
+        )
         self.assertIn('legacy_generator_target="$INSTALL_DIR/gnuplot_generate.py"', install_text)
 
     def test_uninstall_removes_only_manual_layout(self):
@@ -218,11 +245,13 @@ class InstallationTests(unittest.TestCase):
             bin_dir = manual_prefix / "bin"
             package_runtime = root / "usr" / "share" / "ofgs"
             package_wrapper = root / "usr" / "bin" / "ofgs"
+            completion = root / "usr/share/bash-completion/completions/ofgs"
 
             install_dir.mkdir(parents=True)
             bin_dir.mkdir(parents=True)
             package_runtime.mkdir(parents=True)
             package_wrapper.parent.mkdir(parents=True, exist_ok=True)
+            completion.parent.mkdir(parents=True)
             (install_dir / "ofgs_generate.py").write_text("manual generator")
             (install_dir / "gnuplot_generate.py").write_text("legacy generator")
             (bin_dir / "ofgs").write_text("# ofgs-wrapper\n")
@@ -230,6 +259,9 @@ class InstallationTests(unittest.TestCase):
             system_gnuplot.write_text("genuine gnuplot")
             package_wrapper.write_text("# packaged ofgs-wrapper\n")
             (package_runtime / "ofgs_generate.py").write_text("package generator")
+            completion.write_text(
+                "# OFGS bash completion\n# OFGS completion owner: source\n"
+            )
 
             uninstall_script = root / "uninstall.sh"
             uninstall_script.write_text(
@@ -244,12 +276,59 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertFalse(install_dir.exists())
             self.assertFalse((bin_dir / "ofgs").exists())
+            self.assertFalse(completion.exists())
             self.assertEqual(system_gnuplot.read_text(), "genuine gnuplot")
             self.assertEqual(package_wrapper.read_text(), "# packaged ofgs-wrapper\n")
             self.assertEqual(
                 (package_runtime / "ofgs_generate.py").read_text(),
                 "package generator",
             )
+
+    def test_source_install_refuses_unrelated_completion(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            completion = root / "usr/share/bash-completion/completions/ofgs"
+            completion.parent.mkdir(parents=True)
+            completion.write_text("# unrelated completion\n")
+            install_script = root / "install.sh"
+            install_script.write_text(
+                relocated_manual_script(
+                    PROJECT_ROOT / "install.sh",
+                    root,
+                    project_root=PROJECT_ROOT,
+                )
+            )
+
+            completed = subprocess.run(
+                ["/bin/bash", str(install_script), "--force"],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("Refusing to replace", completed.stderr)
+            self.assertEqual(completion.read_text(), "# unrelated completion\n")
+
+    def test_source_uninstall_preserves_unrelated_completion(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            completion = root / "usr/share/bash-completion/completions/ofgs"
+            completion.parent.mkdir(parents=True)
+            completion.write_text("# unrelated completion\n")
+            uninstall_script = root / "uninstall.sh"
+            uninstall_script.write_text(
+                relocated_manual_script(PROJECT_ROOT / "uninstall.sh", root)
+            )
+
+            completed = subprocess.run(
+                ["/bin/bash", str(uninstall_script)],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completion.read_text(), "# unrelated completion\n")
+            self.assertIn("Preserved non-OFGS completion", completed.stdout)
 
 
 if __name__ == "__main__":

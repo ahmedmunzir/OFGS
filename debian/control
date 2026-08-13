@@ -12,6 +12,7 @@ Vcs-Browser: https://github.com/ahmedmunzir/OFGS
 Package: ofgs
 Architecture: all
 Depends: ${misc:Depends}, python3 (>= 3.9), gnuplot-qt (>= 5.4)
+Recommends: bash-completion
 Description: OpenFOAM graph generation and monitoring suite
  OFGS discovers supported OpenFOAM post-processing datasets and generates
  gnuplot dashboards and standalone graphs. It also provides live dashboard,

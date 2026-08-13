@@ -49,6 +49,10 @@ To remove OFGS:
 sudo ./uninstall.sh
 ```
 
+Bash tab completion is installed with both OFGS packages and source
+installations. Open a new shell after installation if completion is not
+immediately available.
+
 ## Usage
 
 Generate all gnuplot scripts for the current OpenFOAM case:
