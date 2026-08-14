@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEBIAN_DIR = PROJECT_ROOT / "debian"
 EXPECTED_RUNTIME_FILES = {
     Path("usr/bin/ofgs"),
+    Path("usr/share/bash-completion/completions/ofgs"),
     Path("usr/share/ofgs/ofgs_generate.py"),
     Path("usr/share/ofgs/core/__init__.py"),
     Path("usr/share/ofgs/core/dataset_parser.py"),
@@ -65,6 +66,7 @@ class DebianPackagingTests(unittest.TestCase):
         self.assertEqual(binary["Architecture"], "all")
         self.assertIn("python3 (>= 3.9)", binary["Depends"])
         self.assertIn("gnuplot-qt (>= 5.4)", binary["Depends"])
+        self.assertEqual(binary["Recommends"], "bash-completion")
         self.assertNotIn("openfoam", binary["Depends"].lower())
 
     def test_version_source_format_and_license(self):
@@ -147,6 +149,10 @@ class DebianPackagingTests(unittest.TestCase):
                 (root / "usr/share/ofgs/ofgs_generate.py")
                 .read_text()
                 .startswith("#!")
+            )
+            self.assertIn(
+                "# OFGS completion owner: package",
+                (root / "usr/share/bash-completion/completions/ofgs").read_text(),
             )
 
     def test_documentation_and_runtime_manifest_are_not_duplicated(self):
